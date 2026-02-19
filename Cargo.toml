@@ -5,11 +5,14 @@ edition = "2024"
 
 [dependencies]
 actix-web = "4.12.1"
+clap = { version = "4.5.59", features = ["derive"] }
 heed = "0.22.0"
 home = "0.5.12"
+log = "0.4.29"
 opaque-ke = { version = "4.1.0-pre.1", features = ["argon2", "ed25519", "std"] }
 serde = "1.0.228"
 sha2 = "0.10.9"
+structured-logger = "1.0.5"
 tokio = { version = "1.49.0", features = ["fs", "macros"] }
 toml = "1.0.2"
 uuid = { version = "1.21.0", features = ["fast-rng", "serde", "v4"] }

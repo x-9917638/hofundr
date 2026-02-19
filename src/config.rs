@@ -10,7 +10,8 @@ use tokio::{
 pub struct Config {
     pub server_setup_path: PathBuf,
     pub database_dir: PathBuf,
-    pub server_port: u16,
+    pub port: u16,
+    pub secret_key: String,
     // TODO!
     // ...
 }
@@ -41,7 +42,8 @@ impl Default for Config {
         Self {
             server_setup_path: PathBuf::new(),
             database_dir: PathBuf::new(),
-            server_port: 8080,
+            port: 8080,
+            secret_key: String::new(),
         }
     }
 }
