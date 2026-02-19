@@ -8,8 +8,6 @@ use clap::Parser;
 use heed::EnvOpenOptions;
 use heed::types::{SerdeBincode, Str};
 use home::home_dir;
-use opaque_ke::argon2::{Algorithm, Argon2, Params, Version};
-use opaque_ke::rand::RngCore;
 use opaque_ke::rand::rngs::OsRng;
 use opaque_ke::{ServerLogin, ServerLoginParameters, ServerRegistration, ServerSetup};
 use structured_logger::async_json::new_writer;
@@ -30,7 +28,6 @@ struct AppState {
     server_setup: ServerSetup<DefaultCipherSuite>,
     database_env: heed::Env,
     database: heed::Database<Str, SerdeBincode<ClientEntry>>,
-    secret_key: [u8; 32],
     sessions: Mutex<HashMap<Uuid, ServerLogin<DefaultCipherSuite>>>,
 }
 
@@ -70,6 +67,7 @@ async fn register_start(
         Ok(w) => w,
         Err(e) => {
             log::warn!("{}", e);
+            log::error!("Failed to initialise write transaction in the /register_start route");
             return web::Json(RegistrationRequestResponse::err());
         }
     };
@@ -82,6 +80,12 @@ async fn register_start(
         return web::Json(RegistrationRequestResponse::err());
     }
 
+    if let Err(e) = wtxn.commit() {
+        log::warn!("{}", e);
+        log::error!("A database write transaction failed in the /register_end route.");
+        return web::Json(RegistrationRequestResponse::err());
+    }
+
     web::Json(RegistrationRequestResponse {
         status: "Ok".to_string(),
         identifier: Some(uuid),
@@ -89,7 +93,7 @@ async fn register_start(
     })
 }
 
-#[post("register_fin")]
+#[post("register_end")]
 async fn register_end(
     data: web::Data<AppState>,
     payload: web::Json<RegistrationUploadPayload>,
@@ -100,6 +104,7 @@ async fn register_end(
         Ok(w) => w,
         Err(e) => {
             log::warn!("{}", e);
+            log::error!("Failed to initialise write transaction in the /register_end route");
             return web::Json(RegistrationUploadResponse::err());
         }
     };
@@ -116,6 +121,12 @@ async fn register_end(
         return web::Json(RegistrationUploadResponse::err());
     }
 
+    if let Err(e) = wtxn.commit() {
+        log::warn!("{}", e);
+        log::error!("A database write transaction failed in the /register_end route.");
+        return web::Json(RegistrationUploadResponse::err());
+    }
+
     web::Json(RegistrationUploadResponse {
         status: "Ok".to_string(),
     })
@@ -129,7 +140,14 @@ async fn login(
     data: web::Data<AppState>,
     payload: web::Json<LoginPayload>,
 ) -> web::Json<LoginResponse> {
-    let rtxn = data.database_env.read_txn().unwrap();
+    let rtxn = match data.database_env.read_txn() {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("{}", e);
+            log::error!("Failed to initialise read transaction in the /login route");
+            return web::Json(LoginResponse::err());
+        }
+    };
     let password_file = {
         if let Ok(res) = data.database.get(&rtxn, &payload.uuid.to_string()) {
             if let Some(entry) = res {
@@ -143,6 +161,7 @@ async fn login(
     };
     if let Err(e) = rtxn.commit() {
         log::warn!("{}", e);
+        log::error!("A database read transaction failed in the /login route.");
         return web::Json(LoginResponse::err());
     };
     let mut server_rng = OsRng;
@@ -249,6 +268,17 @@ async fn main() -> Result<(), std::io::Error> {
 
     let server_setup = opaque_setup(config.server_setup_path.to_str().unwrap()).await?;
     let dir = config.database_dir;
+
+    // SAFETY:
+    // - All transactions are commited as soon as possible.
+    // - The NO_LOCK flag is NOT set.
+    //
+    // However, this may cause UB if the user aborts the
+    // process, modifies the memory map or breaks the
+    // logfile.
+    //
+    // To avoid this, clearly document these limitations.
+    // TODO!
     let database_env = unsafe {
         EnvOpenOptions::new()
             .open(dir)
@@ -259,14 +289,12 @@ async fn main() -> Result<(), std::io::Error> {
         .create_database(&mut wtxn, None)
         .map_err(heed_err_to_io_err)?;
     wtxn.commit().map_err(heed_err_to_io_err)?;
-    let secret_key = derive_secret_key(&config.secret_key);
     let sessions = Mutex::from(HashMap::new());
 
     let data = web::Data::new(AppState {
         server_setup,
         database,
         database_env,
-        secret_key,
         sessions,
     });
     HttpServer::new(move || {
@@ -281,21 +309,6 @@ async fn main() -> Result<(), std::io::Error> {
     .bind(("127.0.0.1", config.port))?
     .run()
     .await
-}
-
-fn derive_secret_key(secret: &str) -> [u8; 32] {
-    let argon2 = Argon2::new(
-        Algorithm::Argon2id,
-        Version::V0x13,
-        Params::new(10240, 10, 4, None).unwrap(),
-    );
-    let mut out = [0u8; 32];
-    let mut salt = [0u8; 16];
-    OsRng.fill_bytes(&mut salt);
-    argon2
-        .hash_password_into(secret.as_bytes(), &salt, &mut out)
-        .expect("Invalid secret key");
-    out
 }
 
 fn heed_err_to_io_err(e: heed::Error) -> io::Error {
