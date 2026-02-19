@@ -16,6 +16,12 @@ pub struct Cli {
     pub config: Option<PathBuf>,
 }
 
+pub trait ResponseError {
+    /// Return an instance of Self with optional
+    /// fields empty and status = "Err"
+    fn err() -> Self;
+}
+
 #[derive(serde::Deserialize, Clone)]
 pub struct RegistrationRequestPayload {
     pub registration_request: RegistrationRequest<DefaultCipherSuite>,
@@ -28,8 +34,8 @@ pub struct RegistrationRequestResponse {
     pub registration_response: Option<RegistrationResponse<DefaultCipherSuite>>,
 }
 
-impl RegistrationRequestResponse {
-    pub fn err() -> Self {
+impl ResponseError for RegistrationRequestResponse {
+    fn err() -> Self {
         Self {
             status: "Err".to_string(),
             identifier: None,
@@ -49,8 +55,8 @@ pub struct RegistrationUploadResponse {
     pub status: String,
 }
 
-impl RegistrationUploadResponse {
-    pub fn err() -> Self {
+impl ResponseError for RegistrationUploadResponse {
+    fn err() -> Self {
         Self {
             status: "Err".to_string(),
         }
@@ -70,8 +76,8 @@ pub struct LoginResponse {
     pub credential_response: Option<CredentialResponse<DefaultCipherSuite>>,
 }
 
-impl LoginResponse {
-    pub fn err() -> Self {
+impl ResponseError for LoginResponse {
+    fn err() -> Self {
         Self {
             status: "Err".to_string(),
             session_id: None,
