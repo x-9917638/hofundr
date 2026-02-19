@@ -1,3 +1,4 @@
+use expanduser::expanduser;
 use std::path::PathBuf;
 
 use tokio::{
@@ -11,7 +12,7 @@ pub struct Config {
     pub server_setup_path: PathBuf,
     pub database_dir: PathBuf,
     pub port: u16,
-    pub secret_key: String,
+    pub logfile: PathBuf,
     // TODO!
     // ...
 }
@@ -20,9 +21,32 @@ impl Config {
     /// Attempts to load a config file from a given path.
     pub async fn load(path: &str) -> Result<Self, tokio::io::Error> {
         let toml_str = fs::read_to_string(path).await?;
-        toml::from_str(&toml_str)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.message()))
+        let mut config: Config = toml::from_str(&toml_str)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.message()))?;
+
+        // Fix ~ paths
+        config.server_setup_path = expanduser(
+            config
+                .server_setup_path
+                .to_str()
+                .expect("Non UTF-8 characters in server_setup_path."),
+        )?;
+        config.database_dir = expanduser(
+            config
+                .database_dir
+                .to_str()
+                .expect("Non UTF-8 characters in database_dir."),
+        )?;
+        config.logfile = expanduser(
+            config
+                .logfile
+                .to_str()
+                .expect("Non UTF-8 characters in logfile."),
+        )?;
+
+        Ok(config)
     }
+
     /// Attempts to write a config file to disk.
     pub async fn write(&self, path: &str) -> Result<(), tokio::io::Error> {
         let toml_str = toml::to_string_pretty(self)
@@ -42,8 +66,8 @@ impl Default for Config {
         Self {
             server_setup_path: PathBuf::new(),
             database_dir: PathBuf::new(),
+            logfile: PathBuf::new(),
             port: 8080,
-            secret_key: String::new(),
         }
     }
 }
