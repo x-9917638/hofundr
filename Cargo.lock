@@ -1181,6 +1181,7 @@ dependencies = [
  "log",
  "opaque-ke",
  "serde",
+ "serde_json",
  "sha2",
  "structured-logger",
  "tokio",

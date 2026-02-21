@@ -32,7 +32,8 @@ use structured_logger::async_json::new_writer;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tokio::{fs, task};
-use utoipa::{OpenApi};
+use utoipa::openapi::extensions::ExtensionsBuilder;
+use utoipa::{Modify, OpenApi};
 use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
@@ -357,6 +358,55 @@ As per the AGPL-3.0. source code can be found [here](https://git.ouppy.gay/valer
 )]
 struct ApiDoc;
 
+struct CodeSamples;
+
+macro_rules! add_code_sample {
+    ($openapi:expr, $path:literal, $label:literal, $lang:literal, $source:literal) => {{
+        if let Some(item) = $openapi.paths.paths.get_mut($path) {
+            if let Some(op) = item.post.as_mut() {
+                let _ = op.extensions
+                    .insert(ExtensionsBuilder::new()
+                        .add("x-codeSamples", serde_json::json!({
+                            "label": $label,
+                            "lang": $lang,
+                            "source": $source
+                        }))
+                        .build()
+                    );
+            }
+        }
+    }};
+}
+
+impl Modify for CodeSamples {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        add_code_sample!(openapi, "/register_start", "reqwest, opaque-ke", "Rust",
+            r#"use serde_json::json;
+use opaque_ke::{ClientRegistration, rand::rngs::OsRng};
+
+let password = "test";
+let url = "https://example.com/api"
+let client = reqwest::ClientBuilder::new().build()?
+let mut client_rng = OsRng;
+let client_registration_start_result =
+    ClientRegistration::<DefaultCipherSuite>::start(
+        &mut client_rng, 
+        password.as_bytes()
+    )?;
+        
+let res = client
+    .post(url.to_owned() + "/register_start")
+    .header("Content-Type", "application/json")
+    .json(json!({
+        "registration_request": client_registration_start_result.message,
+    }))
+    .send()
+    .await?;
+let res = res.json()?;"#
+        ); 
+    }
+}
+
 #[actix_web::main]
 async fn main() -> Result<(), std::io::Error> {
     let cli = Cli::parse();
@@ -443,6 +493,10 @@ async fn main() -> Result<(), std::io::Error> {
         database_env,
         sessions,
     });
+
+    let mut api = ApiDoc::openapi();
+    let ext = CodeSamples;
+    ext.modify(&mut api);
     HttpServer::new(move || {
         let scope = web::scope("/api")
             .service(register_start)
@@ -453,7 +507,7 @@ async fn main() -> Result<(), std::io::Error> {
         App::new()
             .app_data(data.clone())
             .service(
-                Scalar::with_url("/", ApiDoc::openapi()).custom_html(SCALAR_HTML)
+                Scalar::with_url("/", api.clone()).custom_html(SCALAR_HTML)
             )
             .service(scope)
      })
