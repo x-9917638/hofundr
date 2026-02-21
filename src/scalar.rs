@@ -38938,7 +38938,7 @@ prefilledMessage:e.prefilledMessage,registryDocuments:[],registryUrl:om(V7e)
     <script>
       Scalar.createApiReference('#app', {
         "content": $spec,
-        "theme": "purple",
+        "theme": "solarized",
         "layout": "modern",
         "showSidebar": false,
         "defaultOpenAllTags": true,
@@ -38954,12 +38954,12 @@ prefilledMessage:e.prefilledMessage,registryDocuments:[],registryUrl:om(V7e)
         "isEditable": false,
         "isLoading": false,
         "hideModels": false,
-        "documentDownloadType": "both",
+        "documentDownloadType": "json",
         "hideSearch": false,
         "showOperationId": false,
         "hideDarkModeToggle": false,
-        "withDefaultFonts": true,
-        "orderSchemaPropertiesBy": "alpha",
+        "withDefaultFonts": false,
+        "orderSchemaPropertiesBy": "preserve",
         "orderRequiredPropertiesFirst": true,
         "default": false,
         "slug": "spec",
@@ -38968,7 +38968,7 @@ prefilledMessage:e.prefilledMessage,registryDocuments:[],registryUrl:om(V7e)
             "disabled": true
         },
         "hiddenClients": true,
-        "isLoading": true
+        "isLoading": false
       })
     </script>
   </body>
