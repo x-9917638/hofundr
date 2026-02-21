@@ -46,21 +46,20 @@ impl From<ProtocolError> for ToIoError {
 
 impl From<ToIoError> for io::Error {
     fn from(err: ToIoError) -> Self {
-        io::Error::new(io::ErrorKind::Other, err.source)
+        io::Error::other(err.source)
     }
 }
 
 /// Load an existing ServerSetup from disk,
 /// or create one if none exists.
 pub async fn opaque_setup(path: &str) -> Result<ServerSetup<DefaultCipherSuite>, io::Error> {
-    if let Ok(res) = fs::try_exists(path).await {
-        if res {
+    if let Ok(res) = fs::try_exists(path).await
+        && res {
             let contents = fs::read(path).await?;
             let server_setup = ServerSetup::<DefaultCipherSuite>::deserialize(&contents)
                 .map_err(ToIoError::from)?;
             return Ok(server_setup);
         }
-    }
     let mut file = fs::File::create(path).await?;
     let mut rng = OsRng;
     let server_setup = ServerSetup::<DefaultCipherSuite>::new(&mut rng);

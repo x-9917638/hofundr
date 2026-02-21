@@ -68,7 +68,7 @@ impl Config {
         let toml_str = toml::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
         let mut file = File::create(path).await?;
-        file.write(toml_str.as_bytes()).await?;
+        file.write_all(toml_str.as_bytes()).await?;
         Ok(())
     }
 

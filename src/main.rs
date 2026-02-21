@@ -19,7 +19,7 @@ use std::io;
 use std::process::exit;
 use std::time::Duration;
 
-use actix_web::{App, HttpResponse, HttpResponseBuilder, HttpServer, get, post, web};
+use actix_web::{App, HttpResponse, HttpServer, post, web};
 use clap::Parser;
 use heed::EnvOpenOptions;
 use heed::types::{SerdeBincode, Str};
@@ -49,20 +49,13 @@ struct AppState {
     sessions: Mutex<HashMap<Uuid, ServerLogin<DefaultCipherSuite>>>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Default)]
 struct ClientEntry {
     password_file: Option<ServerRegistration<DefaultCipherSuite>>,
     database_file: Option<Box<[u8]>>,
 }
 
-impl Default for ClientEntry {
-    fn default() -> Self {
-        Self {
-            password_file: None,
-            database_file: None,
-        }
-    }
-}
+
 
 #[post("/register_start")]
 async fn register_start(
@@ -217,12 +210,8 @@ async fn login(
         }
     };
     let password_file = {
-        if let Ok(res) = data.database.get(&rtxn, &payload.uuid.to_string()) {
-            if let Some(entry) = res {
-                entry.password_file
-            } else {
-                None
-            }
+        if let Ok(Some(entry)) = data.database.get(&rtxn, &payload.uuid.to_string()) {
+            entry.password_file
         } else {
             None
         }
@@ -329,7 +318,7 @@ async fn main() -> Result<(), std::io::Error> {
                 let default_path = home_dir()
                     .expect("Could not get home directory!")
                     .join(".config/hofundr/config.toml");
-                if !(default_path == config_path) {
+                if default_path != config_path {
                     println!("No config found at '{}'", config_path.to_str().unwrap());
                     exit(1)
                 }
@@ -357,7 +346,7 @@ async fn main() -> Result<(), std::io::Error> {
     structured_logger::Builder::with_level("WARN")
         .with_target_writer("*", new_writer(tokio::io::stdout()))
         .try_init()
-        .map_err(|e| std::io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     let server_setup = opaque_setup(config.server_setup_path.to_str().unwrap()).await?;
     let dir = config.database_dir;
@@ -410,5 +399,5 @@ async fn main() -> Result<(), std::io::Error> {
 }
 
 fn heed_err_to_io_err(e: heed::Error) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, e.to_string())
+    io::Error::other(e.to_string())
 }
