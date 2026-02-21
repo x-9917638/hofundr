@@ -83,12 +83,6 @@ impl ResponseError for RegistrationUploadResponse {
 }
 
 #[derive(utoipa::ToSchema, serde::Deserialize, Clone)]
-#[schema(examples(
-    json!({
-        "uuid":"Uuid",
-        "credential_request": "CredentialRequest<DefaultCipherSuite>"
-    })
-))]
 pub struct LoginPayload {
     pub uuid: Uuid,
     #[schema(value_type = &[u8], format = Binary)]

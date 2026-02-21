@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#![allow(text_direction_codepoint_in_literal)]
+
 use std::collections::HashMap;
 use std::io;
 use std::process::exit;
@@ -31,16 +33,18 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tokio::{fs, task};
 use utoipa::{OpenApi};
-use utoipa_swagger_ui::SwaggerUi;
+use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
 mod config;
 mod data;
 mod opaque;
+mod scalar;
 
 use crate::config::Config;
 use crate::data::*;
 use crate::opaque::{DefaultCipherSuite, opaque_setup};
+use crate::scalar::SCALAR_HTML;
 
 struct AppState {
     server_setup: ServerSetup<DefaultCipherSuite>,
@@ -53,10 +57,61 @@ struct AppState {
 struct ClientEntry {
     password_file: Option<ServerRegistration<DefaultCipherSuite>>,
     database_file: Option<Box<[u8]>>,
+    checksum: Option<Box<[u8]>>,
+    last_device: Option<Box<str>>
 }
 
 
+#[utoipa::path(
+    responses(
+        (
+            status = 200, 
+            body = RegistrationRequestResponse, 
+            description = 
+"The server completed the first registration stage sucessfully.
+Upon success, guarantees an identifier (that should be persisted) and 
+registration response.
 
+See the OPAQUE protocol for more details.",
+            examples((
+                "default" = (
+                    summary = "Response upon correct request", 
+                    value = json!({
+                        "status": "Ok",
+                        "identifier": "Some(Uuid)",
+                        "registration_response": "Some(RegistrationResponse<DefaultCipherSuite>)"
+                    })
+                )
+            ))
+        ),
+        (
+            status = 400, 
+            body = RegistrationRequestResponse, 
+            description = "Client sent incorrect request",
+            examples((
+                "default" = (
+                    summary = "Response upon incorrect request",
+                    value = json!({
+                        "status": "Err",
+                        "identifier": None::<u8>,
+                        "registration_response": None::<u8>
+                    })
+                )
+            ))
+        )
+    ),
+    request_body(
+        description = "
+JSON containing key `registration_request`.
+
+- `registration_request` should be an opaque-ke RegistrationRequest
+",
+        content = RegistrationRequestPayload,
+        example = json!({
+            "registration_request": "Some(RegistrationRequest<DefaultCipherSuite>)"
+        })
+    )
+)]
 #[post("/register_start")]
 async fn register_start(
     data: web::Data<AppState>,
@@ -126,6 +181,8 @@ async fn register_end(
         &ClientEntry {
             password_file: Some(password_file),
             database_file: None,
+            checksum: None,
+            last_device: None
         },
     ) {
         log::warn!("{}", e);
@@ -181,11 +238,11 @@ async fn register_end(
     ),
     request_body(
         description = "
-        JSON containing keys 'uuid' and 'credential_request'.
-        
-        - 'uuid' should be the identifier returned to the client upon successful registration.
-        - 'credential_request' should be an opaque-ke CredentialRequest
-        ",
+JSON containing keys `uuid` and `credential_request`.
+
+- `uuid` should be the identifier returned to the client upon successful registration.
+- `credential_request` should be an opaque-ke CredentialRequest
+",
         content = LoginPayload,
         example = json!({
             "uuid": "Uuid",
@@ -270,25 +327,32 @@ async fn push() -> HttpResponse {
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(login),
+    paths(login, register_start),
     info(
-        description = "
-        Hofundr is the API/server backend for syncing .fedb databases. 
-        
-        Whilst designed for the Forseti client, this should be usable for any 
-        client given they comply with these API specifications. Hofundr expects
-        structs from the Rust crate opaque-ke, but other implementations of 
-        OPAQUE may be usable too.
+        description = 
+"Hofundr is the API/server backend for syncing .fedb databases. 
 
-        Many routes will return opaque-ke structs. The CipherSuite used for 
-        these structs should be as such:
-        
-        impl CipherSuite for DefaultCipherSuite {
-            type OprfCs = Ristretto255;
-            type KeyExchange = TripleDh<Ristretto255, sha2::Sha512>;
-            type Ksf = Argon2<'static>;
-        }
-        "
+Whilst designed for the Forseti client, this should be usable for any 
+client given they comply with these API specifications. Hofundr expects
+structs from the Rust crate opaque-ke, but other implementations of 
+OPAQUE may be usable too.
+
+Many routes will return opaque-ke structs. In the following documentation, 
+the CipherSuite of the various structs will be named DefaultCipherSuite, 
+with the CipherSuite trait implemented as such:
+
+```rust
+impl CipherSuite for DefaultCipherSuite {
+    type OprfCs = Ristretto255;
+    type KeyExchange = TripleDh<Ristretto255, sha2::Sha512>;
+    type Ksf = Argon2<'static>;
+}
+```
+As per the AGPL-3.0. source code can be found [here](https://git.ouppy.gay/valerie/hofundr).",
+        license(
+            name = "Licensed under the GNU Affero General Public License 3.0.",
+            identifier = "AGPL-3.0-only"
+        )
     ),
 )]
 struct ApiDoc;
@@ -389,7 +453,7 @@ async fn main() -> Result<(), std::io::Error> {
         App::new()
             .app_data(data.clone())
             .service(
-                SwaggerUi::new("/{_:.*}").url("/api-docs/openapi.json", ApiDoc::openapi())
+                Scalar::with_url("/", ApiDoc::openapi()).custom_html(SCALAR_HTML)
             )
             .service(scope)
      })
