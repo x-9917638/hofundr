@@ -88,7 +88,7 @@ See the OPAQUE protocol for more details.",
         (
             status = 400, 
             body = RegistrationRequestResponse, 
-            description = "Client sent incorrect request",
+            description = "The client sent an incorrect request.",
             examples((
                 "default" = (
                     summary = "Response upon incorrect request",
@@ -109,7 +109,7 @@ JSON containing key `registration_request`.
 ",
         content = RegistrationRequestPayload,
         example = json!({
-            "registration_request": "Some(RegistrationRequest<DefaultCipherSuite>)"
+            "registration_request": "RegistrationRequest<DefaultCipherSuite>"
         })
     )
 )]
@@ -160,7 +160,54 @@ async fn register_start(
     })
 }
 
-#[post("register_end")]
+
+#[utoipa::path(
+    responses(
+        (
+            status = 200, 
+            body = RegistrationUploadResponse, 
+            description = 
+"The server completed the second registration stage sucessfully.
+Does not return anything of significance.
+
+See the OPAQUE protocol for more details.",
+            examples((
+                "default" = (
+                    summary = "Response upon correct request", 
+                    value = json!({
+                        "status": "Ok",
+                    })
+                )
+            ))
+        ),
+        (
+            status = 400, 
+            body = RegistrationUploadResponse, 
+            description = "The client sent an incorrect request.",
+            examples((
+                "default" = (
+                    summary = "Response upon incorrect request",
+                    value = json!({
+                        "status": "Err",
+                    })
+                )
+            ))
+        )
+    ),
+    request_body(
+        description = "
+JSON containing key `uuid` and `registration_upload`.
+
+- `uuid` should be the Uuid returned by the /register_start route.
+- `registration_upload` should be an opaque-ke RegistrationUpload
+",
+        content = RegistrationUploadPayload,
+        example = json!({
+            "registration_upload": "RegistrationUpload<DefaultCipherSuite>"
+        })
+    )
+)]
+#[post("/register_end")]
 async fn register_end(
     data: web::Data<AppState>,
     payload: web::Json<RegistrationUploadPayload>,
@@ -206,10 +253,12 @@ async fn register_end(
         (
             status = 200, 
             body = LoginResponse, 
-            description = "The server completed the first login stage sucessfully
-            but does not guarantee that you are actually authorised to take actions. 
-            Upon success, guarantees a session id and credential response.
-            See the OPAQUE protocol for more details.",
+            description = 
+"The server completed the first login stage sucessfully
+but does not guarantee that you are actually authorised to take actions. 
+Upon success, guarantees a session id and credential response.
+
+See the OPAQUE protocol for more details.",
             examples((
                 "default" = (
                     summary = "Response upon correct request", 
@@ -224,7 +273,7 @@ async fn register_end(
         (
             status = 400, 
             body = LoginResponse, 
-            description = "Client sent incorrect request",
+            description = "The client sent an incorrect request.",
             examples((
                 "default" = (
                     summary = "Response upon incorrect request",
@@ -328,7 +377,7 @@ async fn push() -> HttpResponse {
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(login, register_start),
+    paths(login, register_start, register_end),
     info(
         description = 
 "Hofundr is the API/server backend for syncing .fedb databases. 
@@ -349,9 +398,11 @@ impl CipherSuite for DefaultCipherSuite {
     type Ksf = Argon2<'static>;
 }
 ```
-As per the AGPL-3.0. source code can be found [here](https://git.ouppy.gay/valerie/hofundr).",
+This page uses Scalar, licensed under the MIT License.
+
+Per the AGPL-3.0, source code can be found [here](https://git.ouppy.gay/valerie/hofundr).",
         license(
-            name = "Licensed under the GNU Affero General Public License 3.0.",
+            name = "Licensed under the GNU Affero General Public License 3.0 only.",
             identifier = "AGPL-3.0-only"
         )
     ),
@@ -380,22 +431,22 @@ macro_rules! add_code_sample {
 
 impl Modify for CodeSamples {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
-        add_code_sample!(openapi, "/register_start", "reqwest, opaque-ke", "Rust",
-            r#"use serde_json::json;
+        add_code_sample!(openapi, "/register_start", "Rust (reqwest)", "Rust",
+r#"use serde_json::json;
 use opaque_ke::{ClientRegistration, rand::rngs::OsRng};
 
-let password = "test";
-let url = "https://example.com/api"
-let client = reqwest::ClientBuilder::new().build()?
+let password = b"example";
 let mut client_rng = OsRng;
+
 let client_registration_start_result =
     ClientRegistration::<DefaultCipherSuite>::start(
         &mut client_rng, 
-        password.as_bytes()
+        password
     )?;
         
+let client = reqwest::ClientBuilder::new().build()?
 let res = client
-    .post(url.to_owned() + "/register_start")
+    .post("https://example.com/api/register_start")
     .header("Content-Type", "application/json")
     .json(json!({
         "registration_request": client_registration_start_result.message,
@@ -404,6 +455,44 @@ let res = client
     .await?;
 let res = res.json()?;"#
         ); 
+
+        add_code_sample!(openapi, "/register_end", "Rust (reqwest)", "Rust",
+r#"use serde_json::json;
+use opaque_ke::{ClientRegistration, ClientRegistrationFinishParameters, rand::rngs::OsRng};
+let res; // Response from /register_start
+let password = b"example";
+let mut client_rng = OsRng;
+
+let client_registration_start_result =
+    ClientRegistration::<DefaultCipherSuite>::start(
+        &mut client_rng, 
+        password
+    )?;
+let client_registration_finish_result = 
+    client_registration_start_result
+        .state
+        .finish(
+            &mut client_rng,
+            password,
+            res.registration_response.unwrap(),
+            ClientRegistrationFinishParameters::default(),
+        )?;
+
+let res = client
+    .post("https://example.com/api/register_end")
+    .header("Content-Type", "application/json")
+    .json(json!(
+        "uuid": res.identifier.unwrap(),
+        "registration_upload": client_registration_finish_result.message,
+    ))
+    .send()
+    .await?;
+let res = res.json().await?;"#
+        ); 
+
+        add_code_sample!(openapi, "/login", "Rust (reqwest)", "Rust", 
+r#""#
+        );
     }
 }
 
