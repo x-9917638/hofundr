@@ -19,7 +19,7 @@ use std::io;
 use std::process::exit;
 use std::time::Duration;
 
-use actix_web::{App, HttpResponse, HttpServer, post, web};
+use actix_web::{App, HttpResponse, HttpResponseBuilder, HttpServer, get, post, web};
 use clap::Parser;
 use heed::EnvOpenOptions;
 use heed::types::{SerdeBincode, Str};
@@ -30,6 +30,8 @@ use structured_logger::async_json::new_writer;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tokio::{fs, task};
+use utoipa::{OpenApi};
+use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
 
 mod config;
@@ -148,6 +150,56 @@ async fn register_end(
     })
 }
 
+#[utoipa::path(
+    responses(
+        (
+            status = 200, 
+            body = LoginResponse, 
+            description = "The server completed the first login stage sucessfully
+            but does not guarantee that you are actually authorised to take actions. 
+            Upon success, guarantees a session id and credential response.
+            See the OPAQUE protocol for more details.",
+            examples((
+                "default" = (
+                    summary = "Response upon correct request", 
+                    value = json!({
+                        "status": "Ok",
+                        "session_id": "Some(Uuid)",
+                        "credential_response": "Some(CredentialResponse<DefaultCipherSuite>)"
+                    })
+                )
+            ))
+        ),
+        (
+            status = 400, 
+            body = LoginResponse, 
+            description = "Client sent incorrect request",
+            examples((
+                "default" = (
+                    summary = "Response upon incorrect request",
+                    value = json!({
+                        "status": "Err",
+                        "session_id": None::<u8>,
+                        "credential_response": None::<u8>
+                    })
+                )
+            ))
+        )
+    ),
+    request_body(
+        description = "
+        JSON containing keys 'uuid' and 'credential_request'.
+        
+        - 'uuid' should be the identifier returned to the client upon successful registration.
+        - 'credential_request' should be an opaque-ke CredentialRequest
+        ",
+        content = LoginPayload,
+        example = json!({
+            "uuid": "Uuid",
+            "credential_response": "Some(CredentialRequest<DefaultCipherSuite>)"
+        })
+    )
+)]
 #[post("/login")]
 // Completes the first login stage of opaque
 // The client must send the login response to push or pull
@@ -206,8 +258,8 @@ async fn login(
     // close the session.
     task::spawn(async move {
         sleep(Duration::from_mins(1)).await;
-        let sessions = data.sessions.lock();
-        sessions.await.remove(&session_id);
+        let mut sessions = data.sessions.lock().await;
+        sessions.remove(&session_id);
     });
 
     web::Json(LoginResponse {
@@ -226,6 +278,31 @@ async fn pull() -> HttpResponse {
 async fn push() -> HttpResponse {
     todo!()
 }
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(login),
+    info(
+        description = "
+        Hofundr is the API/server backend for syncing .fedb databases. 
+        
+        Whilst designed for the Forseti client, this should be usable for any 
+        client given they comply with these API specifications. Hofundr expects
+        structs from the Rust crate opaque-ke, but other implementations of 
+        OPAQUE may be usable too.
+
+        Many routes will return opaque-ke structs. The CipherSuite used for 
+        these structs should be as such:
+        
+        impl CipherSuite for DefaultCipherSuite {
+            type OprfCs = Ristretto255;
+            type KeyExchange = TripleDh<Ristretto255, sha2::Sha512>;
+            type Ksf = Argon2<'static>;
+        }
+        "
+    ),
+)]
+struct ApiDoc;
 
 #[actix_web::main]
 async fn main() -> Result<(), std::io::Error> {
@@ -320,8 +397,13 @@ async fn main() -> Result<(), std::io::Error> {
             .service(login)
             .service(pull)
             .service(push);
-        App::new().app_data(data.clone()).service(scope)
-    })
+        App::new()
+            .app_data(data.clone())
+            .service(
+                SwaggerUi::new("/{_:.*}").url("/api-docs/openapi.json", ApiDoc::openapi())
+            )
+            .service(scope)
+     })
     .bind(("127.0.0.1", config.port))?
     .run()
     .await

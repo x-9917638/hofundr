@@ -38,15 +38,17 @@ pub trait ResponseError {
     fn err() -> Self;
 }
 
-#[derive(serde::Deserialize, Clone)]
+#[derive(utoipa::ToSchema, serde::Deserialize, Clone)]
 pub struct RegistrationRequestPayload {
+    #[schema(value_type = &[u8], format = Binary)]
     pub registration_request: RegistrationRequest<DefaultCipherSuite>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(utoipa::ToSchema, serde::Serialize)]
 pub struct RegistrationRequestResponse {
     pub status: String,
     pub identifier: Option<Uuid>,
+    #[schema(value_type = Option<&[u8]>, format = Binary)]
     pub registration_response: Option<RegistrationResponse<DefaultCipherSuite>>,
 }
 
@@ -60,13 +62,14 @@ impl ResponseError for RegistrationRequestResponse {
     }
 }
 
-#[derive(serde::Deserialize, Clone)]
+#[derive(utoipa::ToSchema, serde::Deserialize, Clone)]
 pub struct RegistrationUploadPayload {
     pub uuid: Uuid,
+    #[schema(value_type = &[u8], format = Binary)]
     pub registration_upload: RegistrationUpload<DefaultCipherSuite>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(utoipa::ToSchema, serde::Serialize)]
 pub struct RegistrationUploadResponse {
     pub status: String,
 }
@@ -79,16 +82,24 @@ impl ResponseError for RegistrationUploadResponse {
     }
 }
 
-#[derive(serde::Deserialize, Clone)]
+#[derive(utoipa::ToSchema, serde::Deserialize, Clone)]
+#[schema(examples(
+    json!({
+        "uuid":"Uuid",
+        "credential_request": "CredentialRequest<DefaultCipherSuite>"
+    })
+))]
 pub struct LoginPayload {
     pub uuid: Uuid,
+    #[schema(value_type = &[u8], format = Binary)]
     pub credential_request: CredentialRequest<DefaultCipherSuite>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(utoipa::ToSchema, serde::Serialize)]
 pub struct LoginResponse {
     pub status: String,
     pub session_id: Option<Uuid>,
+    #[schema(value_type = Option<&[u8]>, format = Binary)]
     pub credential_response: Option<CredentialResponse<DefaultCipherSuite>>,
 }
 

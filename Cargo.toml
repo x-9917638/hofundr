@@ -19,4 +19,6 @@ sha2 = "0.10.9"
 structured-logger = "1.0.5"
 tokio = { version = "1.49.0", features = ["fs", "macros"] }
 toml = "1.0.2"
+utoipa = { version = "5.4.0", features = ["actix_extras", "uuid"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["actix-web", "cache", "reqwest"] }
 uuid = { version = "1.21.0", features = ["fast-rng", "serde", "v4"] }
