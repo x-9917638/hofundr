@@ -16,24 +16,23 @@
 
 #![allow(text_direction_codepoint_in_literal)]
 
-use std::collections::HashMap;
-use std::io;
-use std::process::exit;
-use std::time::Duration;
+use std::{collections::HashMap, io, process::exit, time::Duration};
 
-use actix_web::{App, HttpResponse, HttpServer, post, web};
+use actix_web::http::StatusCode;
+use actix_web::{App, HttpResponse, HttpResponseBuilder, HttpServer, post, web};
 use clap::Parser;
-use heed::EnvOpenOptions;
-use heed::types::{SerdeBincode, Str};
+use heed::{
+    EnvOpenOptions,
+    types::{SerdeBincode, Str},
+};
 use home::home_dir;
-use opaque_ke::rand::rngs::OsRng;
-use opaque_ke::{ServerLogin, ServerLoginParameters, ServerRegistration, ServerSetup};
+use opaque_ke::{
+    ServerLogin, ServerLoginParameters, ServerRegistration, ServerSetup, rand::rngs::OsRng,
+};
 use structured_logger::async_json::new_writer;
-use tokio::sync::Mutex;
-use tokio::time::sleep;
 use tokio::{fs, task};
-use utoipa::openapi::extensions::ExtensionsBuilder;
-use utoipa::{Modify, OpenApi};
+use tokio::{sync::Mutex, time::sleep};
+use utoipa::{Modify, OpenApi, openapi::extensions::ExtensionsBuilder};
 use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
@@ -42,10 +41,12 @@ mod data;
 mod opaque;
 mod scalar;
 
-use crate::config::Config;
-use crate::data::*;
-use crate::opaque::{DefaultCipherSuite, opaque_setup};
-use crate::scalar::SCALAR_HTML;
+use crate::{
+    config::Config,
+    data::*,
+    opaque::{DefaultCipherSuite, opaque_setup},
+    scalar::SCALAR_HTML,
+};
 
 struct AppState {
     server_setup: ServerSetup<DefaultCipherSuite>,
@@ -54,21 +55,22 @@ struct AppState {
     sessions: Mutex<HashMap<Uuid, ServerLogin<DefaultCipherSuite>>>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Default, utoipa::ToSchema)]
 struct ClientEntry {
+    #[schema(value_type = Option<&[u8]>, format = Binary)]
     password_file: Option<ServerRegistration<DefaultCipherSuite>>,
     database_file: Option<Box<[u8]>>,
     checksum: Option<Box<[u8]>>,
-    last_device: Option<Box<str>>
+    atime: Option<u64>,
+    last_device: Option<Box<str>>,
 }
-
 
 #[utoipa::path(
     responses(
         (
-            status = 200, 
-            body = RegistrationRequestResponse, 
-            description = 
+            status = 200,
+            body = RegistrationRequestResponse,
+            description =
 "The server completed the first registration stage sucessfully.
 Upon success, guarantees an identifier (that should be persisted) and 
 registration response.
@@ -86,12 +88,27 @@ See the OPAQUE protocol for more details.",
             ))
         ),
         (
-            status = 400, 
-            body = RegistrationRequestResponse, 
+            status = 400,
+            body = RegistrationRequestResponse,
             description = "The client sent an incorrect request.",
             examples((
                 "default" = (
                     summary = "Response upon incorrect request",
+                    value = json!({
+                        "status": "Err",
+                        "identifier": None::<u8>,
+                        "registration_response": None::<u8>
+                    })
+                )
+            ))
+        ),
+        (
+            status = 400,
+            body = RegistrationRequestResponse,
+            description = "An error occured processing the request.",
+            examples((
+                "default" = (
+                    summary = "Response upon internal server error",
                     value = json!({
                         "status": "Err",
                         "identifier": None::<u8>,
@@ -117,7 +134,7 @@ JSON containing key `registration_request`.
 async fn register_start(
     data: web::Data<AppState>,
     payload: web::Json<RegistrationRequestPayload>,
-) -> web::Json<RegistrationRequestResponse> {
+) -> HttpResponse {
     let uuid = Uuid::new_v4();
     let reg_result = match ServerRegistration::<DefaultCipherSuite>::start(
         &data.server_setup,
@@ -127,7 +144,9 @@ async fn register_start(
         Ok(v) => v,
         Err(e) => {
             log::warn!("{}", e);
-            return web::Json(RegistrationRequestResponse::err());
+            log::error!("Failed to start server registration");
+            return HttpResponseBuilder::new(StatusCode::BAD_REQUEST)
+                .json(RegistrationRequestResponse::err());
         }
     };
     let mut wtxn = match data.database_env.write_txn() {
@@ -135,7 +154,8 @@ async fn register_start(
         Err(e) => {
             log::warn!("{}", e);
             log::error!("Failed to initialise write transaction in the /register_start route");
-            return web::Json(RegistrationRequestResponse::err());
+            return HttpResponseBuilder::new(StatusCode::BAD_REQUEST)
+                .json(RegistrationRequestResponse::err());
         }
     };
 
@@ -144,29 +164,30 @@ async fn register_start(
         .put(&mut wtxn, &uuid.to_string(), &ClientEntry::default())
     {
         log::warn!("{}", e);
-        return web::Json(RegistrationRequestResponse::err());
+        return HttpResponseBuilder::new(StatusCode::BAD_REQUEST)
+            .json(RegistrationRequestResponse::err());
     }
 
     if let Err(e) = wtxn.commit() {
         log::warn!("{}", e);
         log::error!("A database write transaction failed in the /register_end route.");
-        return web::Json(RegistrationRequestResponse::err());
+        return HttpResponseBuilder::new(StatusCode::BAD_REQUEST)
+            .json(RegistrationRequestResponse::err());
     }
 
-    web::Json(RegistrationRequestResponse {
+    HttpResponseBuilder::new(StatusCode::OK).json(RegistrationRequestResponse {
         status: "Ok".to_string(),
         identifier: Some(uuid),
         registration_response: Some(reg_result.message),
     })
 }
 
-
 #[utoipa::path(
     responses(
         (
-            status = 200, 
-            body = RegistrationUploadResponse, 
-            description = 
+            status = 200,
+            body = RegistrationUploadResponse,
+            description =
 "The server completed the second registration stage sucessfully.
 Does not return anything of significance.
 
@@ -181,12 +202,25 @@ See the OPAQUE protocol for more details.",
             ))
         ),
         (
-            status = 400, 
-            body = RegistrationUploadResponse, 
+            status = 400,
+            body = RegistrationUploadResponse,
             description = "The client sent an incorrect request.",
             examples((
                 "default" = (
                     summary = "Response upon incorrect request",
+                    value = json!({
+                        "status": "Err",
+                    })
+                )
+            ))
+        ),
+        (
+            status = 500,
+            body = RegistrationUploadResponse,
+            description = "An error occured processing the request.",
+            examples((
+                "default" = (
+                    summary = "Response upon internal server error",
                     value = json!({
                         "status": "Err",
                     })
@@ -230,7 +264,8 @@ async fn register_end(
             password_file: Some(password_file),
             database_file: None,
             checksum: None,
-            last_device: None
+            last_device: None,
+            atime: None,
         },
     ) {
         log::warn!("{}", e);
@@ -251,9 +286,9 @@ async fn register_end(
 #[utoipa::path(
     responses(
         (
-            status = 200, 
-            body = LoginResponse, 
-            description = 
+            status = 200,
+            body = LoginResponse,
+            description =
 "The server completed the first login stage sucessfully
 but does not guarantee that you are actually authorised to take actions. 
 Upon success, guarantees a session id and credential response.
@@ -271,12 +306,27 @@ See the OPAQUE protocol for more details.",
             ))
         ),
         (
-            status = 400, 
-            body = LoginResponse, 
+            status = 400,
+            body = LoginResponse,
             description = "The client sent an incorrect request.",
             examples((
                 "default" = (
                     summary = "Response upon incorrect request",
+                    value = json!({
+                        "status": "Err",
+                        "session_id": None::<u8>,
+                        "credential_response": None::<u8>
+                    })
+                )
+            ))
+        ),
+        (
+            status = 500,
+            body = LoginResponse,
+            description = "An error occured processing the request.",
+            examples((
+                "default" = (
+                    summary = "Response upon internal server error",
                     value = json!({
                         "status": "Err",
                         "session_id": None::<u8>,
@@ -304,16 +354,14 @@ JSON containing keys `uuid` and `credential_request`.
 // Completes the first login stage of opaque
 // The client must send the login response to push or pull
 // a file.
-async fn login(
-    data: web::Data<AppState>,
-    payload: web::Json<LoginPayload>,
-) -> web::Json<LoginResponse> {
+async fn login(data: web::Data<AppState>, payload: web::Json<LoginPayload>) -> HttpResponse {
     let rtxn = match data.database_env.read_txn() {
         Ok(r) => r,
         Err(e) => {
             log::warn!("{}", e);
             log::error!("Failed to initialise read transaction in the /login route");
-            return web::Json(LoginResponse::err());
+            return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+                .json(LoginResponse::err());
         }
     };
     let password_file = {
@@ -326,7 +374,8 @@ async fn login(
     if let Err(e) = rtxn.commit() {
         log::warn!("{}", e);
         log::error!("A database read transaction failed in the /login route.");
-        return web::Json(LoginResponse::err());
+        return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+            .json(LoginResponse::err());
     };
     let mut server_rng = OsRng;
     let server_login_start_result = match ServerLogin::start(
@@ -340,7 +389,7 @@ async fn login(
         Ok(s) => s,
         Err(e) => {
             log::warn!("{}", e);
-            return web::Json(LoginResponse::err());
+            return HttpResponseBuilder::new(StatusCode::BAD_REQUEST).json(LoginResponse::err());
         }
     };
     let session_id = Uuid::new_v4();
@@ -358,11 +407,11 @@ async fn login(
         sessions.remove(&session_id);
     });
 
-    web::Json(LoginResponse {
+    return HttpResponseBuilder::new(StatusCode::OK).json(LoginResponse {
         status: "Ok".to_string(),
         session_id: Some(session_id),
         credential_response: Some(server_login_start_result.message),
-    })
+    });
 }
 
 #[post("/pull")]
@@ -379,8 +428,7 @@ async fn push() -> HttpResponse {
 #[openapi(
     paths(login, register_start, register_end),
     info(
-        description = 
-"Hofundr is the API/server backend for syncing .fedb databases. 
+        description = "Hofundr is the API/server backend for syncing .fedb databases. 
 
 Whilst designed for the Forseti client, this should be usable for any 
 client given they comply with these API specifications. Hofundr expects
@@ -405,7 +453,7 @@ Per the AGPL-3.0, source code can be found [here](https://git.ouppy.gay/valerie/
             name = "Licensed under the GNU Affero General Public License 3.0 only.",
             identifier = "AGPL-3.0-only"
         )
-    ),
+    )
 )]
 struct ApiDoc;
 
@@ -431,8 +479,12 @@ macro_rules! add_code_sample {
 
 impl Modify for CodeSamples {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
-        add_code_sample!(openapi, "/register_start", "Rust (reqwest)", "Rust",
-r#"use serde_json::json;
+        add_code_sample!(
+            openapi,
+            "/register_start",
+            "Rust (reqwest)",
+            "Rust",
+            r#"use serde_json::json;
 use opaque_ke::{ClientRegistration, rand::rngs::OsRng};
 
 let password = b"example";
@@ -454,10 +506,14 @@ let res = client
     .send()
     .await?;
 let res = res.json()?;"#
-        ); 
+        );
 
-        add_code_sample!(openapi, "/register_end", "Rust (reqwest)", "Rust",
-r#"use serde_json::json;
+        add_code_sample!(
+            openapi,
+            "/register_end",
+            "Rust (reqwest)",
+            "Rust",
+            r#"use serde_json::json;
 use opaque_ke::{ClientRegistration, ClientRegistrationFinishParameters, rand::rngs::OsRng};
 let res; // Response from /register_start
 let password = b"example";
@@ -488,11 +544,9 @@ let res = client
     .send()
     .await?;
 let res = res.json().await?;"#
-        ); 
-
-        add_code_sample!(openapi, "/login", "Rust (reqwest)", "Rust", 
-r#""#
         );
+
+        add_code_sample!(openapi, "/login", "Rust (reqwest)", "Rust", r#""#);
     }
 }
 
@@ -595,11 +649,9 @@ async fn main() -> Result<(), std::io::Error> {
             .service(push);
         App::new()
             .app_data(data.clone())
-            .service(
-                Scalar::with_url("/", api.clone()).custom_html(SCALAR_HTML)
-            )
+            .service(Scalar::with_url("/", api.clone()).custom_html(SCALAR_HTML))
             .service(scope)
-     })
+    })
     .bind(("127.0.0.1", config.port))?
     .run()
     .await
