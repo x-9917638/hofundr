@@ -13,16 +13,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, rc::Rc};
 
+use crate::opaque::DefaultCipherSuite;
 use clap::Parser;
 use opaque_ke::{
     CredentialRequest, CredentialResponse, RegistrationRequest, RegistrationResponse,
     RegistrationUpload,
 };
 use uuid::Uuid;
-
-use crate::opaque::DefaultCipherSuite;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -63,7 +62,7 @@ impl ResponseError for RegistrationRequestResponse {
 
 #[derive(utoipa::ToSchema, serde::Deserialize, Clone)]
 pub struct RegistrationUploadPayload {
-    pub uuid: Uuid,
+    pub identifier: Uuid,
     #[schema(value_type = &[u8], format = Binary)]
     pub registration_upload: RegistrationUpload<DefaultCipherSuite>,
 }
@@ -83,7 +82,7 @@ impl ResponseError for RegistrationUploadResponse {
 
 #[derive(utoipa::ToSchema, serde::Deserialize, Clone)]
 pub struct LoginPayload {
-    pub uuid: Uuid,
+    pub identifier: Uuid,
     #[schema(value_type = &[u8], format = Binary)]
     pub credential_request: CredentialRequest<DefaultCipherSuite>,
 }
@@ -104,4 +103,33 @@ impl ResponseError for LoginResponse {
             credential_response: None,
         }
     }
+}
+
+#[derive(serde::Deserialize, Clone, utoipa::ToSchema)]
+pub struct PushPayload {
+    identifier: Uuid,
+    session_id: Uuid,
+    session_key: Rc<[u8]>,
+    file: Rc<[u8]>,
+    checksum: Rc<[u8]>,
+    last_modified: u64,
+    device_id: Rc<str>,
+}
+
+pub struct PushResponse {
+    status: String,
+}
+
+#[derive(serde::Deserialize, Clone, utoipa::ToSchema)]
+pub struct PullPayload {
+    identifier: Uuid,
+    session_id: Uuid,
+    session_key: Rc<[u8]>,
+    last_modified: u64,
+}
+
+pub struct PullResponse {
+    status: String,
+    file: Vec<u8>,
+    checksum: [u8; 32],
 }
