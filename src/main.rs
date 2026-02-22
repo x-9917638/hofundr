@@ -13,12 +13,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#![allow(text_direction_codepoint_in_literal)]
-
 use std::{collections::HashMap, io, process::exit, time::Duration};
 
-use actix_web::http::StatusCode;
-use actix_web::{App, HttpResponse, HttpResponseBuilder, HttpServer, post, web};
+use actix_web::{
+    App, HttpResponse, HttpResponseBuilder, HttpServer,
+    http::StatusCode,
+    post,
+    web::{self, JsonConfig},
+};
+use actix_web_lab::extract::Json;
 use clap::Parser;
 use heed::{
     EnvOpenOptions,
@@ -47,6 +50,12 @@ use crate::{
     scalar::SCALAR_HTML,
 };
 
+const LIMIT_REGISTRATION_START: usize = 256;
+const LIMIT_REGISTRATION_END: usize = 1024;
+const LIMIT_LOGIN: usize = 512;
+// const LIMIT_PULL: usize = 1024;
+// const LIMIT_PUSH: usize = 1024;
+
 struct AppState {
     server_setup: ServerSetup<DefaultCipherSuite>,
     database_env: heed::Env,
@@ -59,8 +68,12 @@ struct ClientEntry {
     #[schema(value_type = Option<&[u8]>, format = Binary)]
     password_file: Option<ServerRegistration<DefaultCipherSuite>>,
     database_file: Option<Box<[u8]>>,
-    checksum: Option<Box<[u8]>>,
-    atime: Option<u64>,
+    /// A sha256 hash of the database
+    checksum: Option<[u8; 32]>,
+    /// A timestamp (denoting seconds since UNIX_EPOCH) of when
+    /// the last push occured.
+    last_push: Option<u64>,
+    /// Records the last device to push.
     last_device: Option<Box<str>>,
 }
 
@@ -132,13 +145,13 @@ JSON containing key `registration_request`.
 #[post("/register_start")]
 async fn register_start(
     data: web::Data<AppState>,
-    payload: web::Json<RegistrationRequestPayload>,
+    payload: Json<RegistrationRequestPayload, LIMIT_REGISTRATION_START>,
 ) -> HttpResponse {
-    let uuid = Uuid::new_v4();
+    let identifier = Uuid::new_v4();
     let reg_result = match ServerRegistration::<DefaultCipherSuite>::start(
         &data.server_setup,
         payload.registration_request.clone(),
-        uuid.as_bytes(),
+        identifier.as_bytes(),
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -160,7 +173,7 @@ async fn register_start(
 
     if let Err(e) = data
         .database
-        .put(&mut wtxn, &uuid.to_string(), &ClientEntry::default())
+        .put(&mut wtxn, &identifier.to_string(), &ClientEntry::default())
     {
         log::warn!("{}", e);
         return HttpResponseBuilder::new(StatusCode::BAD_REQUEST)
@@ -176,7 +189,7 @@ async fn register_start(
 
     HttpResponseBuilder::new(StatusCode::OK).json(RegistrationRequestResponse {
         status: "Ok".to_string(),
-        identifier: Some(uuid),
+        identifier: Some(identifier),
         registration_response: Some(reg_result.message),
     })
 }
@@ -229,13 +242,14 @@ See the OPAQUE protocol for more details.",
     ),
     request_body(
         description = "
-JSON containing key `uuid` and `registration_upload`.
+JSON containing key `identifier` and `registration_upload`.
 
-- `uuid` should be the Uuid returned by the /register_start route.
+- `identifier` should be the identifier returned by the /register_start route.
 - `registration_upload` should be an opaque-ke RegistrationUpload
 ",
         content = RegistrationUploadPayload,
         example = json!({
+            "identifier": "Uuid",
             "registration_upload": "RegistrationUpload<DefaultCipherSuite>"
         })
     )
@@ -243,7 +257,7 @@ JSON containing key `uuid` and `registration_upload`.
 #[post("/register_end")]
 async fn register_end(
     data: web::Data<AppState>,
-    payload: web::Json<RegistrationUploadPayload>,
+    payload: Json<RegistrationUploadPayload, LIMIT_REGISTRATION_END>,
 ) -> web::Json<RegistrationUploadResponse> {
     let password_file = ServerRegistration::finish(payload.registration_upload.clone());
 
@@ -258,13 +272,13 @@ async fn register_end(
 
     if let Err(e) = data.database.put(
         &mut wtxn,
-        &payload.uuid.to_string(),
+        &payload.identifier.to_string(),
         &ClientEntry {
             password_file: Some(password_file),
             database_file: None,
             checksum: None,
             last_device: None,
-            atime: None,
+            last_push: None,
         },
     ) {
         log::warn!("{}", e);
@@ -344,7 +358,7 @@ JSON containing keys `uuid` and `credential_request`.
 ",
         content = LoginPayload,
         example = json!({
-            "uuid": "Uuid",
+            "identifier": "Uuid",
             "credential_response": "Some(CredentialRequest<DefaultCipherSuite>)"
         })
     )
@@ -353,7 +367,10 @@ JSON containing keys `uuid` and `credential_request`.
 // Completes the first login stage of opaque
 // The client must send the login response to push or pull
 // a file.
-async fn login(data: web::Data<AppState>, payload: web::Json<LoginPayload>) -> HttpResponse {
+async fn login(
+    data: web::Data<AppState>,
+    payload: Json<LoginPayload, LIMIT_LOGIN>,
+) -> HttpResponse {
     let rtxn = match data.database_env.read_txn() {
         Ok(r) => r,
         Err(e) => {
@@ -364,7 +381,7 @@ async fn login(data: web::Data<AppState>, payload: web::Json<LoginPayload>) -> H
         }
     };
     let password_file = {
-        if let Ok(Some(entry)) = data.database.get(&rtxn, &payload.uuid.to_string()) {
+        if let Ok(Some(entry)) = data.database.get(&rtxn, &payload.identifier.to_string()) {
             entry.password_file
         } else {
             None
@@ -382,7 +399,7 @@ async fn login(data: web::Data<AppState>, payload: web::Json<LoginPayload>) -> H
         &data.server_setup,
         password_file,
         payload.credential_request.clone(),
-        payload.uuid.as_bytes(),
+        payload.identifier.as_bytes(),
         ServerLoginParameters::default(),
     ) {
         Ok(s) => s,
@@ -406,11 +423,11 @@ async fn login(data: web::Data<AppState>, payload: web::Json<LoginPayload>) -> H
         sessions.remove(&session_id);
     });
 
-    return HttpResponseBuilder::new(StatusCode::OK).json(LoginResponse {
+    HttpResponseBuilder::new(StatusCode::OK).json(LoginResponse {
         status: "Ok".to_string(),
         session_id: Some(session_id),
         credential_response: Some(server_login_start_result.message),
-    });
+    })
 }
 
 #[post("/pull")]
@@ -495,7 +512,7 @@ let client_registration_start_result =
         password
     )?;
         
-let client = reqwest::ClientBuilder::new().build()?
+let client = reqwest::ClientBuilder::new().build()?;
 let res = client
     .post("https://example.com/api/register_start")
     .header("Content-Type", "application/json")
@@ -514,7 +531,7 @@ let res = res.json()?;"#
             "Rust",
             r#"use serde_json::json;
 use opaque_ke::{ClientRegistration, ClientRegistrationFinishParameters, rand::rngs::OsRng};
-let res; // Response from /register_start
+let res; // JSON from /register_start
 let password = b"example";
 let mut client_rng = OsRng;
 
@@ -533,19 +550,47 @@ let client_registration_finish_result =
             ClientRegistrationFinishParameters::default(),
         )?;
 
+let client = reqwest::ClientBuilder::new().build()?;
 let res = client
     .post("https://example.com/api/register_end")
     .header("Content-Type", "application/json")
-    .json(json!(
-        "uuid": res.identifier.unwrap(),
+    .json(json!({
+        "identifier": res.identifier.unwrap(),
         "registration_upload": client_registration_finish_result.message,
-    ))
+    }))
     .send()
     .await?;
 let res = res.json().await?;"#
         );
 
-        add_code_sample!(openapi, "/login", "Rust (reqwest)", "Rust", r#""#);
+        add_code_sample!(
+            openapi,
+            "/login",
+            "Rust (reqwest)",
+            "Rust",
+            r#"use serde_json::json;
+use opaque_ke::{ClientLogin, rand::rngs::OsRng};
+let uuid; // UUID from /register_start
+let password = b"example";
+let mut client_rng = OsRng;
+let client_login_start_result =
+        ClientLogin::<DefaultCipherSuite>::start(
+            &mut client_rng, 
+            password
+        )?;
+
+let client = reqwest::ClientBuilder::new().build()?;
+let res = client
+        .post("https://example.com/api/login")
+        .header("Content-Type", "application/json")
+        .json(json!({
+            "identifier": uuid, 
+            "credential_request": client_login_start_result.message
+        }))
+        .send()
+        .await?;
+let res = res.json().await?;"#
+        );
     }
 }
 
@@ -640,6 +685,9 @@ async fn main() -> Result<(), std::io::Error> {
     let ext = CodeSamples;
     ext.modify(&mut api);
     HttpServer::new(move || {
+        let json_cfg = JsonConfig::default()
+            .content_type(|mime| mime == actix_web::mime::APPLICATION_JSON)
+            .content_type_required(true);
         let scope = web::scope("/api")
             .service(register_start)
             .service(register_end)
@@ -648,6 +696,7 @@ async fn main() -> Result<(), std::io::Error> {
             .service(push);
         App::new()
             .app_data(data.clone())
+            .app_data(json_cfg)
             .service(Scalar::with_url("/", api.clone()).custom_html(SCALAR_HTML))
             .service(scope)
     })
