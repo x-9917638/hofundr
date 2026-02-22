@@ -40,14 +40,14 @@ impl RegistrationRequestPayload {
 
 #[derive(serde::Serialize, Clone)]
 pub struct RegistrationUploadPayload {
-    pub uuid: Uuid,
+    pub identifier: Uuid,
     pub registration_upload: RegistrationUpload<DefaultCipherSuite>,
 }
 
 impl RegistrationUploadPayload {
     pub fn new(uuid: Uuid, msg: RegistrationUpload<DefaultCipherSuite>) -> Self {
         Self {
-            uuid,
+            identifier: uuid,
             registration_upload: msg,
         }
     }
@@ -55,14 +55,14 @@ impl RegistrationUploadPayload {
 
 #[derive(serde::Serialize, Clone)]
 pub struct LoginPayload {
-    pub uuid: Uuid,
+    pub identifier: Uuid,
     pub credential_request: CredentialRequest<DefaultCipherSuite>,
 }
 
 impl LoginPayload {
     pub fn new(uuid: Uuid, msg: CredentialRequest<DefaultCipherSuite>) -> Self {
         Self {
-            uuid,
+            identifier: uuid,
             credential_request: msg,
         }
     }

@@ -29,16 +29,19 @@ pub struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Commands {
-    FullTest,
-    TestRegister {
+    Register {
         #[arg(short, long)]
         password: String,
         #[arg(short, long)]
         output: PathBuf,
     },
-    TestLogin {
+    Login {
+        #[arg(short, long)]
+        password: String,
         #[arg(short, long)]
         input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
     },
 }
 
@@ -49,6 +52,7 @@ pub enum LogLevel {
     Info,
     Warn,
     Error,
+    Trace,
 }
 
 impl std::fmt::Display for LogLevel {
