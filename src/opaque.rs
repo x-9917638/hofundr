@@ -54,12 +54,13 @@ impl From<ToIoError> for io::Error {
 /// or create one if none exists.
 pub async fn opaque_setup(path: &str) -> Result<ServerSetup<DefaultCipherSuite>, io::Error> {
     if let Ok(res) = fs::try_exists(path).await
-        && res {
-            let contents = fs::read(path).await?;
-            let server_setup = ServerSetup::<DefaultCipherSuite>::deserialize(&contents)
-                .map_err(ToIoError::from)?;
-            return Ok(server_setup);
-        }
+        && res
+    {
+        let contents = fs::read(path).await?;
+        let server_setup =
+            ServerSetup::<DefaultCipherSuite>::deserialize(&contents).map_err(ToIoError::from)?;
+        return Ok(server_setup);
+    }
     let mut file = fs::File::create(path).await?;
     let mut rng = OsRng;
     let server_setup = ServerSetup::<DefaultCipherSuite>::new(&mut rng);
