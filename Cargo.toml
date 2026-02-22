@@ -23,3 +23,10 @@ toml = "1.0.2"
 utoipa = { version = "5.4.0", features = ["actix_extras", "preserve_order", "preserve_path_order", "uuid"] }
 utoipa-scalar = { version = "0.3.0", features = ["actix-web"] }
 uuid = { version = "1.21.0", features = ["fast-rng", "serde", "v4"] }
+
+[profile.release]
+strip = "symbols"
+panic = "abort"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
