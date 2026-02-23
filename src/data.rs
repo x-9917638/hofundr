@@ -18,8 +18,8 @@ use std::{path::PathBuf, rc::Rc};
 use crate::opaque::DefaultCipherSuite;
 use clap::Parser;
 use opaque_ke::{
-    CredentialRequest, CredentialResponse, RegistrationRequest, RegistrationResponse,
-    RegistrationUpload,
+    CredentialFinalization, CredentialRequest, CredentialResponse, RegistrationRequest,
+    RegistrationResponse, RegistrationUpload,
 };
 use uuid::Uuid;
 
@@ -107,29 +107,53 @@ impl ResponseError for LoginResponse {
 
 #[derive(serde::Deserialize, Clone, utoipa::ToSchema)]
 pub struct PushPayload {
-    identifier: Uuid,
-    session_id: Uuid,
-    session_key: Rc<[u8]>,
-    file: Rc<[u8]>,
-    checksum: Rc<[u8]>,
-    last_modified: u64,
-    device_id: Rc<str>,
+    pub identifier: Uuid,
+    pub session_id: Uuid,
+    pub session_key: Rc<[u8]>,
+    #[schema(value_type = Option<&[u8]>, format = Binary)]
+    pub credential_finalization: CredentialFinalization<DefaultCipherSuite>,
+    pub file: Rc<[u8]>,
+    pub checksum: Rc<[u8]>,
+    pub last_modified: u64,
+    pub device_id: Rc<str>,
 }
 
+#[derive(utoipa::ToSchema, serde::Serialize)]
 pub struct PushResponse {
-    status: String,
+    pub status: String,
+}
+
+impl ResponseError for PushResponse {
+    fn err() -> Self {
+        Self {
+            status: "Err".to_string(),
+        }
+    }
 }
 
 #[derive(serde::Deserialize, Clone, utoipa::ToSchema)]
 pub struct PullPayload {
-    identifier: Uuid,
-    session_id: Uuid,
-    session_key: Rc<[u8]>,
-    last_modified: u64,
+    pub identifier: Uuid,
+    pub session_id: Uuid,
+    pub session_key: Rc<[u8]>,
+    #[schema(value_type = Option<&[u8]>, format = Binary)]
+    pub credential_finalization: CredentialFinalization<DefaultCipherSuite>,
+    pub last_written: u64,
 }
 
+#[derive(utoipa::ToSchema, serde::Serialize)]
 pub struct PullResponse {
-    status: String,
-    file: Vec<u8>,
-    checksum: [u8; 32],
+    pub status: String,
+    pub file: Option<Vec<u8>>,
+    pub checksum: Option<[u8; 32]>,
+}
+
+impl ResponseError for PullResponse {
+    fn err() -> Self {
+        Self {
+            status: "Err".to_string(),
+            file: None,
+            checksum: None,
+        }
+    }
 }

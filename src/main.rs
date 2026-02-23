@@ -12,8 +12,7 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-use std::{collections::HashMap, io, process::exit, time::Duration};
+use std::{collections::HashMap, io, ops::Deref as _, process::exit, time::Duration};
 
 use actix_web::{
     App, HttpResponse, HttpResponseBuilder, HttpServer,
@@ -84,13 +83,13 @@ struct ClientEntry {
             body = RegistrationRequestResponse,
             description =
 "The server completed the first registration stage sucessfully.
-Upon success, guarantees an identifier (that should be persisted) and 
+Upon success, guarantees an identifier (that should be persisted) and
 registration response.
 
 See the OPAQUE protocol for more details.",
             examples((
                 "default" = (
-                    summary = "Response upon correct request", 
+                    summary = "Response upon correct request",
                     value = json!({
                         "status": "Ok",
                         "identifier": "Some(Uuid)",
@@ -206,7 +205,7 @@ Does not return anything of significance.
 See the OPAQUE protocol for more details.",
             examples((
                 "default" = (
-                    summary = "Response upon correct request", 
+                    summary = "Response upon correct request",
                     value = json!({
                         "status": "Ok",
                     })
@@ -303,13 +302,13 @@ async fn register_end(
             body = LoginResponse,
             description =
 "The server completed the first login stage sucessfully
-but does not guarantee that you are actually authorised to take actions. 
+but does not guarantee that you are actually authorised to take actions.
 Upon success, guarantees a session id and credential response.
 
 See the OPAQUE protocol for more details.",
             examples((
                 "default" = (
-                    summary = "Response upon correct request", 
+                    summary = "Response upon correct request",
                     value = json!({
                         "status": "Ok",
                         "session_id": "Some(Uuid)",
@@ -419,6 +418,7 @@ async fn login(
     // close the session.
     task::spawn(async move {
         sleep(Duration::from_mins(1)).await;
+        log::warn!("Session of id {} timed out", session_id);
         let mut sessions = data.sessions.lock().await;
         sessions.remove(&session_id);
     });
@@ -431,8 +431,72 @@ async fn login(
 }
 
 #[post("/pull")]
-async fn pull() -> HttpResponse {
-    todo!()
+async fn pull(data: web::Data<AppState>, payload: Json<PullPayload>) -> HttpResponse {
+    let mut sessions = data.sessions.lock().await;
+    let server_login = sessions.remove(&payload.session_id);
+    if server_login.is_none() {
+        log::warn!("Client attempted to use invalid session!");
+        return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+            .json(PullResponse::err());
+    }
+    let server_login = server_login.unwrap();
+    let server_login_finish_result = match server_login.finish(
+        payload.credential_finalization.clone(),
+        ServerLoginParameters::default(),
+    ) {
+        Ok(res) => res,
+        Err(_) => {
+            log::warn!("Failed server login finish for route /pull");
+            return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+                .json(PullResponse::err());
+        }
+    };
+
+    if server_login_finish_result.session_key.as_slice() != payload.session_key.deref() {
+        log::warn!("Invalid session key for route /pull");
+        return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+            .json(PullResponse::err());
+    }
+
+    let rtxn = match data.database_env.read_txn() {
+        Ok(r) => r,
+        Err(_) => {
+            log::warn!("Failed database read transaction init for route /pull");
+            return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+                .json(PullResponse::err());
+        }
+    };
+
+    // This should never fail.
+    let client_entry = match data.database.get(&rtxn, &payload.identifier.to_string()) {
+        Ok(c) => c.unwrap(),
+        Err(_) => {
+            log::warn!("Failed database getting entry for route /pull");
+            return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+                .json(PullResponse::err());
+        }
+    };
+
+    if let Some(atime) = client_entry.last_push
+        && payload.last_written > atime
+    {
+        // TODO: Inform client that their version is later than ours.
+        return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+            .json(PullResponse::err());
+    }
+
+    if let Some(file) = client_entry.database_file {
+        // TODO: Encrypt file with session key.
+        //
+        // Note: What if I got client to encrypt database_files
+        // with the export key so the files on the server have
+        // been encrypted twice, with the server not having any
+        // way to decrypt? This should be more secure + no need
+        // to do any encryption on server so yay less resources
+        todo!();
+    }
+
+    HttpResponseBuilder::new(StatusCode::OK).finish()
 }
 
 #[post("/push")]
@@ -444,15 +508,15 @@ async fn push() -> HttpResponse {
 #[openapi(
     paths(login, register_start, register_end),
     info(
-        description = "Hofundr is the API/server backend for syncing .fedb databases. 
+        description = "Hofundr is the API/server backend for syncing .fedb databases.
 
-Whilst designed for the Forseti client, this should be usable for any 
+Whilst designed for the Forseti client, this should be usable for any
 client given they comply with these API specifications. Hofundr expects
-structs from the Rust crate opaque-ke, but other implementations of 
+structs from the Rust crate opaque-ke, but other implementations of
 OPAQUE may be usable too.
 
-Many routes will return opaque-ke structs. In the following documentation, 
-the CipherSuite of the various structs will be named DefaultCipherSuite, 
+Many routes will return opaque-ke structs. In the following documentation,
+the CipherSuite of the various structs will be named DefaultCipherSuite,
 with the CipherSuite trait implemented as such:
 
 ```rust
@@ -508,10 +572,10 @@ let mut client_rng = OsRng;
 
 let client_registration_start_result =
     ClientRegistration::<DefaultCipherSuite>::start(
-        &mut client_rng, 
+        &mut client_rng,
         password
     )?;
-        
+
 let client = reqwest::ClientBuilder::new().build()?;
 let res = client
     .post("https://example.com/api/register_start")
@@ -537,10 +601,10 @@ let mut client_rng = OsRng;
 
 let client_registration_start_result =
     ClientRegistration::<DefaultCipherSuite>::start(
-        &mut client_rng, 
+        &mut client_rng,
         password
     )?;
-let client_registration_finish_result = 
+let client_registration_finish_result =
     client_registration_start_result
         .state
         .finish(
@@ -575,7 +639,7 @@ let password = b"example";
 let mut client_rng = OsRng;
 let client_login_start_result =
         ClientLogin::<DefaultCipherSuite>::start(
-            &mut client_rng, 
+            &mut client_rng,
             password
         )?;
 
@@ -584,7 +648,7 @@ let res = client
         .post("https://example.com/api/login")
         .header("Content-Type", "application/json")
         .json(json!({
-            "identifier": uuid, 
+            "identifier": uuid,
             "credential_request": client_login_start_result.message
         }))
         .send()
