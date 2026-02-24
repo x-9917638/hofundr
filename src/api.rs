@@ -421,5 +421,8 @@ pub async fn api_json() -> HttpResponse {
         .body(API_JSON.as_str())
 }
 
-static API_JSON: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| ApiDoc::openapi().to_json().unwrap());
+static API_JSON: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let mut api = ApiDoc::openapi();
+    CodeSamples.modify(&mut api);
+    api.to_json().unwrap()
+});
