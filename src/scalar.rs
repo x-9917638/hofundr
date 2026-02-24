@@ -38937,7 +38937,7 @@ prefilledMessage:e.prefilledMessage,registryDocuments:[],registryUrl:om(V7e)
     <!-- Initialize the Scalar API Reference -->
     <script>
       Scalar.createApiReference('#app', {
-        "content": $spec,
+        "url": "/api-docs/openapi.json",
         "theme": "solarized",
         "layout": "modern",
         "showSidebar": false,
@@ -38946,7 +38946,6 @@ prefilledMessage:e.prefilledMessage,registryDocuments:[],registryUrl:om(V7e)
         "expandAllResponses": true,
         "hideTestRequestButton": true,
         "hideClientButton": true,
-        "showDeveloperTools": "never",
         "showToolbar": "never",
         "operationTitleSource": "summary",
         "persistAuth": false,
@@ -38954,7 +38953,7 @@ prefilledMessage:e.prefilledMessage,registryDocuments:[],registryUrl:om(V7e)
         "isEditable": false,
         "isLoading": false,
         "hideModels": false,
-        "documentDownloadType": "json",
+        "documentDownloadType": "direct",
         "hideSearch": false,
         "showOperationId": false,
         "hideDarkModeToggle": false,

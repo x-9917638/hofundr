@@ -12,7 +12,9 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use std::{collections::HashMap, io, ops::Deref as _, process::exit, time::Duration};
+use std::{
+    collections::HashMap, io, ops::Deref as _, path::PathBuf, process::exit, time::Duration,
+};
 
 use actix_web::{
     App, HttpResponse, HttpResponseBuilder, HttpServer,
@@ -33,10 +35,10 @@ use opaque_ke::{
 use structured_logger::async_json::new_writer;
 use tokio::{fs, task};
 use tokio::{sync::Mutex, time::sleep};
-use utoipa::{Modify, OpenApi, openapi::extensions::ExtensionsBuilder};
-use utoipa_scalar::{Scalar, Servable};
+use utoipa::{Modify, OpenApi};
 use uuid::Uuid;
 
+mod api;
 mod config;
 mod data;
 mod opaque;
@@ -46,7 +48,6 @@ use crate::{
     config::Config,
     data::*,
     opaque::{DefaultCipherSuite, opaque_setup},
-    scalar::SCALAR_HTML,
 };
 
 const LIMIT_REGISTRATION_START: usize = 256;
@@ -76,80 +77,16 @@ struct ClientEntry {
     last_device: Option<Box<str>>,
 }
 
-#[utoipa::path(
-    responses(
-        (
-            status = 200,
-            body = RegistrationRequestResponse,
-            description =
-"The server completed the first registration stage sucessfully.
-Upon success, guarantees an identifier (that should be persisted) and
-registration response.
-
-See the OPAQUE protocol for more details.",
-            examples((
-                "default" = (
-                    summary = "Response upon correct request",
-                    value = json!({
-                        "status": "Ok",
-                        "identifier": "Some(Uuid)",
-                        "registration_response": "Some(RegistrationResponse<DefaultCipherSuite>)"
-                    })
-                )
-            ))
-        ),
-        (
-            status = 400,
-            body = RegistrationRequestResponse,
-            description = "The client sent an incorrect request.",
-            examples((
-                "default" = (
-                    summary = "Response upon incorrect request",
-                    value = json!({
-                        "status": "Err",
-                        "identifier": None::<u8>,
-                        "registration_response": None::<u8>
-                    })
-                )
-            ))
-        ),
-        (
-            status = 400,
-            body = RegistrationRequestResponse,
-            description = "An error occured processing the request.",
-            examples((
-                "default" = (
-                    summary = "Response upon internal server error",
-                    value = json!({
-                        "status": "Err",
-                        "identifier": None::<u8>,
-                        "registration_response": None::<u8>
-                    })
-                )
-            ))
-        )
-    ),
-    request_body(
-        description = "
-JSON containing key `registration_request`.
-
-- `registration_request` should be an opaque-ke RegistrationRequest
-",
-        content = RegistrationRequestPayload,
-        example = json!({
-            "registration_request": "RegistrationRequest<DefaultCipherSuite>"
-        })
-    )
-)]
 #[post("/register_start")]
 async fn register_start(
     data: web::Data<AppState>,
     payload: Json<RegistrationRequestPayload, LIMIT_REGISTRATION_START>,
 ) -> HttpResponse {
+    let payload = payload.into_inner();
     let identifier = Uuid::new_v4();
     let reg_result = match ServerRegistration::<DefaultCipherSuite>::start(
         &data.server_setup,
-        payload.registration_request.clone(),
+        payload.registration_request,
         identifier.as_bytes(),
     ) {
         Ok(v) => v,
@@ -193,72 +130,13 @@ async fn register_start(
     })
 }
 
-#[utoipa::path(
-    responses(
-        (
-            status = 200,
-            body = RegistrationUploadResponse,
-            description =
-"The server completed the second registration stage sucessfully.
-Does not return anything of significance.
-
-See the OPAQUE protocol for more details.",
-            examples((
-                "default" = (
-                    summary = "Response upon correct request",
-                    value = json!({
-                        "status": "Ok",
-                    })
-                )
-            ))
-        ),
-        (
-            status = 400,
-            body = RegistrationUploadResponse,
-            description = "The client sent an incorrect request.",
-            examples((
-                "default" = (
-                    summary = "Response upon incorrect request",
-                    value = json!({
-                        "status": "Err",
-                    })
-                )
-            ))
-        ),
-        (
-            status = 500,
-            body = RegistrationUploadResponse,
-            description = "An error occured processing the request.",
-            examples((
-                "default" = (
-                    summary = "Response upon internal server error",
-                    value = json!({
-                        "status": "Err",
-                    })
-                )
-            ))
-        )
-    ),
-    request_body(
-        description = "
-JSON containing key `identifier` and `registration_upload`.
-
-- `identifier` should be the identifier returned by the /register_start route.
-- `registration_upload` should be an opaque-ke RegistrationUpload
-",
-        content = RegistrationUploadPayload,
-        example = json!({
-            "identifier": "Uuid",
-            "registration_upload": "RegistrationUpload<DefaultCipherSuite>"
-        })
-    )
-)]
 #[post("/register_end")]
 async fn register_end(
     data: web::Data<AppState>,
     payload: Json<RegistrationUploadPayload, LIMIT_REGISTRATION_END>,
 ) -> web::Json<RegistrationUploadResponse> {
-    let password_file = ServerRegistration::finish(payload.registration_upload.clone());
+    let payload = payload.into_inner();
+    let password_file = ServerRegistration::finish(payload.registration_upload);
 
     let mut wtxn = match data.database_env.write_txn() {
         Ok(w) => w,
@@ -295,73 +173,6 @@ async fn register_end(
     })
 }
 
-#[utoipa::path(
-    responses(
-        (
-            status = 200,
-            body = LoginResponse,
-            description =
-"The server completed the first login stage sucessfully
-but does not guarantee that you are actually authorised to take actions.
-Upon success, guarantees a session id and credential response.
-
-See the OPAQUE protocol for more details.",
-            examples((
-                "default" = (
-                    summary = "Response upon correct request",
-                    value = json!({
-                        "status": "Ok",
-                        "session_id": "Some(Uuid)",
-                        "credential_response": "Some(CredentialResponse<DefaultCipherSuite>)"
-                    })
-                )
-            ))
-        ),
-        (
-            status = 400,
-            body = LoginResponse,
-            description = "The client sent an incorrect request.",
-            examples((
-                "default" = (
-                    summary = "Response upon incorrect request",
-                    value = json!({
-                        "status": "Err",
-                        "session_id": None::<u8>,
-                        "credential_response": None::<u8>
-                    })
-                )
-            ))
-        ),
-        (
-            status = 500,
-            body = LoginResponse,
-            description = "An error occured processing the request.",
-            examples((
-                "default" = (
-                    summary = "Response upon internal server error",
-                    value = json!({
-                        "status": "Err",
-                        "session_id": None::<u8>,
-                        "credential_response": None::<u8>
-                    })
-                )
-            ))
-        )
-    ),
-    request_body(
-        description = "
-JSON containing keys `uuid` and `credential_request`.
-
-- `uuid` should be the identifier returned to the client upon successful registration.
-- `credential_request` should be an opaque-ke CredentialRequest
-",
-        content = LoginPayload,
-        example = json!({
-            "identifier": "Uuid",
-            "credential_response": "Some(CredentialRequest<DefaultCipherSuite>)"
-        })
-    )
-)]
 #[post("/login")]
 // Completes the first login stage of opaque
 // The client must send the login response to push or pull
@@ -370,6 +181,7 @@ async fn login(
     data: web::Data<AppState>,
     payload: Json<LoginPayload, LIMIT_LOGIN>,
 ) -> HttpResponse {
+    let payload = payload.into_inner();
     let rtxn = match data.database_env.read_txn() {
         Ok(r) => r,
         Err(e) => {
@@ -397,7 +209,7 @@ async fn login(
         &mut server_rng,
         &data.server_setup,
         password_file,
-        payload.credential_request.clone(),
+        payload.credential_request,
         payload.identifier.as_bytes(),
         ServerLoginParameters::default(),
     ) {
@@ -432,6 +244,7 @@ async fn login(
 
 #[post("/pull")]
 async fn pull(data: web::Data<AppState>, payload: Json<PullPayload>) -> HttpResponse {
+    let payload = payload.into_inner();
     let mut sessions = data.sessions.lock().await;
     let server_login = sessions.remove(&payload.session_id);
     if server_login.is_none() {
@@ -441,7 +254,7 @@ async fn pull(data: web::Data<AppState>, payload: Json<PullPayload>) -> HttpResp
     }
     let server_login = server_login.unwrap();
     let server_login_finish_result = match server_login.finish(
-        payload.credential_finalization.clone(),
+        payload.credential_finalization,
         ServerLoginParameters::default(),
     ) {
         Ok(res) => res,
@@ -480,7 +293,9 @@ async fn pull(data: web::Data<AppState>, payload: Json<PullPayload>) -> HttpResp
     if let Some(atime) = client_entry.last_push
         && payload.last_written > atime
     {
-        // TODO: Inform client that their version is later than ours.
+        // TODO: Refactor the errors I send back to client so
+        // that i can inform client that their version is later
+        // than the server's.
         return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
             .json(PullResponse::err());
     }
@@ -492,184 +307,69 @@ async fn pull(data: web::Data<AppState>, payload: Json<PullPayload>) -> HttpResp
         // with the export key so the files on the server have
         // been encrypted twice, with the server not having any
         // way to decrypt? This should be more secure + no need
-        // to do any encryption on server so yay less resources
+        // to do any encryption on server so yay less resources.
+        // However menas I can't check if the file is a valid
+        // Forseti database...
         todo!();
+    } else {
+        // TODO: Send error informing no file stored.
     }
 
     HttpResponseBuilder::new(StatusCode::OK).finish()
 }
 
 #[post("/push")]
-async fn push() -> HttpResponse {
+async fn push(data: web::Data<AppState>, payload: Json<PushPayload>) -> HttpResponse {
+    let payload = payload.into_inner();
+    let mut sessions = data.sessions.lock().await;
+    let server_login = sessions.remove(&payload.session_id);
+    if server_login.is_none() {
+        log::warn!("Client attempted to use invalid session!");
+        return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+            .json(PushResponse::err());
+    }
+    let server_login = server_login.unwrap();
+    let server_login_finish_result = match server_login.finish(
+        payload.credential_finalization,
+        ServerLoginParameters::default(),
+    ) {
+        Ok(res) => res,
+        Err(_) => {
+            log::warn!("Failed server login finish for route /pull");
+            return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+                .json(PushResponse::err());
+        }
+    };
+
+    if server_login_finish_result.session_key.as_slice() != payload.session_key.deref() {
+        log::warn!("Invalid session key for route /pull");
+        return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+            .json(PushResponse::err());
+    }
+
+    let rtxn = match data.database_env.read_txn() {
+        Ok(r) => r,
+        Err(_) => {
+            log::warn!("Failed database read transaction init for route /pull");
+            return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+                .json(PushResponse::err());
+        }
+    };
+
+    // This should never fail.
+    let client_entry = match data.database.get(&rtxn, &payload.identifier.to_string()) {
+        Ok(c) => c.unwrap(),
+        Err(_) => {
+            log::warn!("Failed database getting entry for route /pull");
+            return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+                .json(PullResponse::err());
+        }
+    };
     todo!()
 }
 
-#[derive(OpenApi)]
-#[openapi(
-    paths(login, register_start, register_end),
-    info(
-        description = "Hofundr is the API/server backend for syncing .fedb databases.
-
-Whilst designed for the Forseti client, this should be usable for any
-client given they comply with these API specifications. Hofundr expects
-structs from the Rust crate opaque-ke, but other implementations of
-OPAQUE may be usable too.
-
-Many routes will return opaque-ke structs. In the following documentation,
-the CipherSuite of the various structs will be named DefaultCipherSuite,
-with the CipherSuite trait implemented as such:
-
-```rust
-impl CipherSuite for DefaultCipherSuite {
-    type OprfCs = Ristretto255;
-    type KeyExchange = TripleDh<Ristretto255, sha2::Sha512>;
-    type Ksf = Argon2<'static>;
-}
-```
-This page uses Scalar, licensed under the MIT License.
-
-Per the AGPL-3.0, source code can be found [here](https://git.ouppy.gay/valerie/hofundr).",
-        license(
-            name = "Licensed under the GNU Affero General Public License 3.0 only.",
-            identifier = "AGPL-3.0-only"
-        )
-    )
-)]
-struct ApiDoc;
-
-struct CodeSamples;
-
-macro_rules! add_code_sample {
-    ($openapi:expr, $path:literal, $label:literal, $lang:literal, $source:literal) => {{
-        if let Some(item) = $openapi.paths.paths.get_mut($path) {
-            if let Some(op) = item.post.as_mut() {
-                let _ = op.extensions
-                    .insert(ExtensionsBuilder::new()
-                        .add("x-codeSamples", serde_json::json!({
-                            "label": $label,
-                            "lang": $lang,
-                            "source": $source
-                        }))
-                        .build()
-                    );
-            }
-        }
-    }};
-}
-
-impl Modify for CodeSamples {
-    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
-        add_code_sample!(
-            openapi,
-            "/register_start",
-            "Rust (reqwest)",
-            "Rust",
-            r#"use serde_json::json;
-use opaque_ke::{ClientRegistration, rand::rngs::OsRng};
-
-let password = b"example";
-let mut client_rng = OsRng;
-
-let client_registration_start_result =
-    ClientRegistration::<DefaultCipherSuite>::start(
-        &mut client_rng,
-        password
-    )?;
-
-let client = reqwest::ClientBuilder::new().build()?;
-let res = client
-    .post("https://example.com/api/register_start")
-    .header("Content-Type", "application/json")
-    .json(json!({
-        "registration_request": client_registration_start_result.message,
-    }))
-    .send()
-    .await?;
-let res = res.json()?;"#
-        );
-
-        add_code_sample!(
-            openapi,
-            "/register_end",
-            "Rust (reqwest)",
-            "Rust",
-            r#"use serde_json::json;
-use opaque_ke::{ClientRegistration, ClientRegistrationFinishParameters, rand::rngs::OsRng};
-let res; // JSON from /register_start
-let password = b"example";
-let mut client_rng = OsRng;
-
-let client_registration_start_result =
-    ClientRegistration::<DefaultCipherSuite>::start(
-        &mut client_rng,
-        password
-    )?;
-let client_registration_finish_result =
-    client_registration_start_result
-        .state
-        .finish(
-            &mut client_rng,
-            password,
-            res.registration_response.unwrap(),
-            ClientRegistrationFinishParameters::default(),
-        )?;
-
-let client = reqwest::ClientBuilder::new().build()?;
-let res = client
-    .post("https://example.com/api/register_end")
-    .header("Content-Type", "application/json")
-    .json(json!({
-        "identifier": res.identifier.unwrap(),
-        "registration_upload": client_registration_finish_result.message,
-    }))
-    .send()
-    .await?;
-let res = res.json().await?;"#
-        );
-
-        add_code_sample!(
-            openapi,
-            "/login",
-            "Rust (reqwest)",
-            "Rust",
-            r#"use serde_json::json;
-use opaque_ke::{ClientLogin, rand::rngs::OsRng};
-let uuid; // UUID from /register_start
-let password = b"example";
-let mut client_rng = OsRng;
-let client_login_start_result =
-        ClientLogin::<DefaultCipherSuite>::start(
-            &mut client_rng,
-            password
-        )?;
-
-let client = reqwest::ClientBuilder::new().build()?;
-let res = client
-        .post("https://example.com/api/login")
-        .header("Content-Type", "application/json")
-        .json(json!({
-            "identifier": uuid,
-            "credential_request": client_login_start_result.message
-        }))
-        .send()
-        .await?;
-let res = res.json().await?;"#
-        );
-    }
-}
-
-#[actix_web::main]
-async fn main() -> Result<(), std::io::Error> {
-    let cli = Cli::parse();
-
-    let config_path = match cli.config {
-        Some(p) => p,
-        None => home_dir()
-            .expect("Could not get home directory!")
-            .join(".config/hofundr/config.toml"),
-    };
-
-    let config = match Config::load(
+async fn load_config(config_path: PathBuf) -> Result<Config, std::io::Error> {
+    Ok(match Config::load(
         config_path
             .to_str()
             .expect("Non UTF-8 characters in config path."),
@@ -706,15 +406,12 @@ async fn main() -> Result<(), std::io::Error> {
             _ => Err(e),
         },
     }
-    .expect("Could not load config!");
+    .expect("Could not load config!"))
+}
 
-    structured_logger::Builder::with_level("WARN")
-        .with_target_writer("*", new_writer(tokio::io::stdout()))
-        .try_init()
-        .map_err(|e| io::Error::other(e.to_string()))?;
-
+async fn init_data(config: &Config) -> Result<web::Data<AppState>, std::io::Error> {
     let server_setup = opaque_setup(config.server_setup_path.to_str().unwrap()).await?;
-    let dir = config.database_dir;
+    let dir = &config.database_dir;
 
     // SAFETY:
     // - All transactions are commited as soon as possible.
@@ -744,9 +441,31 @@ async fn main() -> Result<(), std::io::Error> {
         database_env,
         sessions,
     });
+    Ok(data)
+}
 
-    let mut api = ApiDoc::openapi();
-    let ext = CodeSamples;
+#[actix_web::main]
+async fn main() -> Result<(), std::io::Error> {
+    let cli = Cli::parse();
+
+    let config_path = match cli.config {
+        Some(p) => p,
+        None => home_dir()
+            .expect("Could not get home directory!")
+            .join(".config/hofundr/config.toml"),
+    };
+
+    let config = load_config(config_path).await?;
+
+    structured_logger::Builder::with_level("WARN")
+        .with_target_writer("*", new_writer(tokio::io::stdout()))
+        .try_init()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+
+    let data = init_data(&config).await?;
+
+    let mut api = api::ApiDoc::openapi();
+    let ext = api::CodeSamples;
     ext.modify(&mut api);
     HttpServer::new(move || {
         let json_cfg = JsonConfig::default()
@@ -761,7 +480,8 @@ async fn main() -> Result<(), std::io::Error> {
         App::new()
             .app_data(data.clone())
             .app_data(json_cfg)
-            .service(Scalar::with_url("/", api.clone()).custom_html(SCALAR_HTML))
+            .service(crate::api::api_json)
+            .service(crate::api::api_index)
             .service(scope)
     })
     .bind(("127.0.0.1", config.port))?
