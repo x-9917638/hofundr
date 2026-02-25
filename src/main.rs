@@ -417,10 +417,24 @@ fn init_logger(config: &Config) -> Result<(), io::Error> {
         .path(&config.logfile)
         .build_arc()
         .map_err(io::Error::other)?;
-    let async_pool_sink = spdlog::sink::AsyncPoolSink::builder()
-        .sink(file_sink)
-        .build_arc()
-        .map_err(io::Error::other)?;
+
+    let async_pool_sink = if config.stdout_log {
+        let stdout_sink = spdlog::sink::StdStreamSink::builder()
+            .stdout()
+            .build_arc()
+            .map_err(io::Error::other)?;
+        spdlog::sink::AsyncPoolSink::builder()
+            .sink(file_sink)
+            .sink(stdout_sink)
+            .build_arc()
+            .map_err(io::Error::other)?
+    } else {
+        spdlog::sink::AsyncPoolSink::builder()
+            .sink(file_sink)
+            .build_arc()
+            .map_err(io::Error::other)?
+    };
+
     let async_logger = spdlog::Logger::builder()
         .sink(async_pool_sink)
         .flush_level_filter(spdlog::LevelFilter::All)

@@ -30,6 +30,7 @@ pub struct Config {
     pub port: u16,
     pub logfile: PathBuf,
     pub log_level: Level,
+    pub stdout_log: bool,
     // TODO!
     // ...
 }
@@ -86,6 +87,7 @@ impl Default for Config {
             logfile: PathBuf::new(),
             port: 8080,
             log_level: Level::Warn,
+            stdout_log: true,
         }
     }
 }
