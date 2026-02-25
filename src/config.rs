@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use expanduser::expanduser;
+use log::LevelFilter;
 use std::path::PathBuf;
 
 use tokio::{
@@ -28,6 +29,7 @@ pub struct Config {
     pub database_dir: PathBuf,
     pub port: u16,
     pub logfile: PathBuf,
+    pub log_level: Level,
     // TODO!
     // ...
 }
@@ -83,6 +85,7 @@ impl Default for Config {
             database_dir: PathBuf::new(),
             logfile: PathBuf::new(),
             port: 8080,
+            log_level: Level::Warn,
         }
     }
 }
@@ -103,5 +106,30 @@ mod tests {
         config.write("/tmp/test.toml").await.expect("");
         let loaded = Config::load("/tmp/test.toml").await.expect("");
         assert!(config == loaded);
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[serde(rename_all = "UPPERCASE")]
+#[cfg_attr(test, derive(PartialEq))]
+pub enum Level {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+    Off,
+}
+
+impl From<&Level> for LevelFilter {
+    fn from(value: &Level) -> Self {
+        match value {
+            Level::Off => Self::Off,
+            Level::Trace => Self::Trace,
+            Level::Debug => Self::Debug,
+            Level::Info => Self::Info,
+            Level::Warn => Self::Warn,
+            Level::Error => Self::Error,
+        }
     }
 }

@@ -29,13 +29,12 @@ use heed::{
     types::{SerdeBincode, Str},
 };
 use home::home_dir;
+use log::{LevelFilter, set_max_level};
 use opaque_ke::{
     ServerLogin, ServerLoginParameters, ServerRegistration, ServerSetup, rand::rngs::OsRng,
 };
-use structured_logger::async_json::new_writer;
-use tokio::{fs, task};
-use tokio::{sync::Mutex, time::sleep};
-use utoipa::{Modify, OpenApi};
+use spdlog::log_crate_proxy;
+use tokio::{fs, sync::Mutex, task, time::sleep};
 use uuid::Uuid;
 
 mod api;
@@ -409,6 +408,29 @@ async fn load_config(config_path: PathBuf) -> Result<Config, std::io::Error> {
     .expect("Could not load config!"))
 }
 
+fn init_logger(config: &Config) -> Result<(), io::Error> {
+    spdlog::init_log_crate_proxy()
+        .expect("users should only call `init_log_crate_proxy` function once");
+    log_crate_proxy().set_logger(None);
+    set_max_level(LevelFilter::from(&config.log_level));
+    let file_sink = spdlog::sink::FileSink::builder()
+        .path(&config.logfile)
+        .build_arc()
+        .map_err(io::Error::other)?;
+    let async_pool_sink = spdlog::sink::AsyncPoolSink::builder()
+        .sink(file_sink)
+        .build_arc()
+        .map_err(io::Error::other)?;
+    let async_logger = spdlog::Logger::builder()
+        .sink(async_pool_sink)
+        .flush_level_filter(spdlog::LevelFilter::All)
+        .build_arc()
+        .map_err(io::Error::other)?;
+    log_crate_proxy().set_logger(Some(async_logger));
+
+    Ok(())
+}
+
 async fn init_data(config: &Config) -> Result<web::Data<AppState>, std::io::Error> {
     let server_setup = opaque_setup(config.server_setup_path.to_str().unwrap()).await?;
     let dir = &config.database_dir;
@@ -423,18 +445,13 @@ async fn init_data(config: &Config) -> Result<web::Data<AppState>, std::io::Erro
     //
     // To avoid this, clearly document these limitations.
     // TODO!
-    let database_env = unsafe {
-        EnvOpenOptions::new()
-            .open(dir)
-            .map_err(heed_err_to_io_err)?
-    };
-    let mut wtxn = database_env.write_txn().map_err(heed_err_to_io_err)?;
+    let database_env = unsafe { EnvOpenOptions::new().open(dir).map_err(io::Error::other)? };
+    let mut wtxn = database_env.write_txn().map_err(io::Error::other)?;
     let database = database_env
         .create_database(&mut wtxn, None)
-        .map_err(heed_err_to_io_err)?;
-    wtxn.commit().map_err(heed_err_to_io_err)?;
+        .map_err(io::Error::other)?;
+    wtxn.commit().map_err(io::Error::other)?;
     let sessions = Mutex::from(HashMap::new());
-
     let data = web::Data::new(AppState {
         server_setup,
         database,
@@ -457,16 +474,10 @@ async fn main() -> Result<(), std::io::Error> {
 
     let config = load_config(config_path).await?;
 
-    structured_logger::Builder::with_level("WARN")
-        .with_target_writer("*", new_writer(tokio::io::stdout()))
-        .try_init()
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    init_logger(&config)?;
 
     let data = init_data(&config).await?;
 
-    let mut api = api::ApiDoc::openapi();
-    let ext = api::CodeSamples;
-    ext.modify(&mut api);
     HttpServer::new(move || {
         let json_cfg = JsonConfig::default()
             .content_type(|mime| mime == actix_web::mime::APPLICATION_JSON)
@@ -480,6 +491,7 @@ async fn main() -> Result<(), std::io::Error> {
         App::new()
             .app_data(data.clone())
             .app_data(json_cfg)
+            // Api Documentation
             .service(crate::api::api_json)
             .service(crate::api::api_index)
             .service(scope)
@@ -487,8 +499,4 @@ async fn main() -> Result<(), std::io::Error> {
     .bind(("127.0.0.1", config.port))?
     .run()
     .await
-}
-
-fn heed_err_to_io_err(e: heed::Error) -> io::Error {
-    io::Error::other(e.to_string())
 }
