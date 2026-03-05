@@ -28,7 +28,7 @@ pub struct Config {
     pub server_setup_path: PathBuf,
     pub database_dir: PathBuf,
     pub port: u16,
-    pub logfile: PathBuf,
+    pub logfile: Option<PathBuf>,
     pub log_level: Level,
     pub stdout_log: bool,
     // TODO!
@@ -53,14 +53,15 @@ impl Config {
             config
                 .database_dir
                 .to_str()
-                .expect("Non UTF-8 characters in database_dir."),
+                .expect("Non UTF-8 characters in database_dir path."),
         )?;
-        config.logfile = expanduser(
-            config
-                .logfile
-                .to_str()
-                .expect("Non UTF-8 characters in logfile."),
-        )?;
+        if let Some(logfile) = &config.logfile {
+            config.logfile = Some(expanduser(
+                logfile
+                    .to_str()
+                    .expect("Non UTF-8 characters in logfile path."),
+            )?);
+        };
 
         Ok(config)
     }
@@ -84,7 +85,7 @@ impl Default for Config {
         Self {
             server_setup_path: PathBuf::new(),
             database_dir: PathBuf::new(),
-            logfile: PathBuf::new(),
+            logfile: Some(PathBuf::new()),
             port: 8080,
             log_level: Level::Warn,
             stdout_log: true,
