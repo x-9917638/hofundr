@@ -23,6 +23,7 @@ use actix_web::{
     web::{self, JsonConfig},
 };
 use actix_web_lab::extract::Json;
+use chacha20poly1305::{self, KeyInit, aead::AeadMut};
 use clap::Parser;
 use heed::{
     EnvOpenOptions,
@@ -264,11 +265,28 @@ async fn pull(data: web::Data<AppState>, payload: Json<PullPayload>) -> HttpResp
         }
     };
 
-    if server_login_finish_result.session_key.as_slice() != payload.session_key.deref() {
-        log::warn!("Invalid session key for route /pull");
-        return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
-            .json(PullResponse::err());
-    }
+    let server_session_key = server_login_finish_result.session_key;
+
+    // Decrypt payload
+    let key = chacha20poly1305::Key::from_slice(&server_session_key);
+    let mut cipher = chacha20poly1305::ChaCha20Poly1305::new(key);
+    let nonce = chacha20poly1305::Nonce::from_slice(&payload.nonce);
+    let decrypted_body: EncryptedPullBody = match cipher.decrypt(nonce, payload.ciphertext.as_ref())
+    {
+        Ok(plain) => match plain.try_into() {
+            Ok(p) => p,
+            Err(_) => {
+                log::warn!("Failed to decrypt encrypted payload in /pull");
+                return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+                    .json(PullResponse::err());
+            }
+        },
+        Err(_) => {
+            log::warn!("Failed to decrypt encrypted payload in /pull");
+            return HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR)
+                .json(PullResponse::err());
+        }
+    };
 
     let rtxn = match data.database_env.read_txn() {
         Ok(r) => r,
@@ -290,7 +308,7 @@ async fn pull(data: web::Data<AppState>, payload: Json<PullPayload>) -> HttpResp
     };
 
     if let Some(atime) = client_entry.last_push
-        && payload.last_written > atime
+        && decrypted_body.last_modified > atime
     {
         // TODO: Refactor the errors I send back to client so
         // that i can inform client that their version is later
@@ -300,21 +318,23 @@ async fn pull(data: web::Data<AppState>, payload: Json<PullPayload>) -> HttpResp
     }
 
     if let Some(file) = client_entry.database_file {
-        // TODO: Encrypt file with session key.
-        //
-        // Note: What if I got client to encrypt database_files
+        // CONSIDER: What if I got client to encrypt database_files
         // with the export key so the files on the server have
         // been encrypted twice, with the server not having any
         // way to decrypt? This should be more secure + no need
         // to do any encryption on server so yay less resources.
         // However menas I can't check if the file is a valid
         // Forseti database...
-        todo!();
-    } else {
-        // TODO: Send error informing no file stored.
-    }
 
-    HttpResponseBuilder::new(StatusCode::OK).finish()
+        let file = cipher.encrypt(nonce, file.as_ref()).unwrap();
+        return HttpResponseBuilder::new(StatusCode::OK).json(PullResponse {
+            status: "Ok".to_string(),
+            file: Some(file),
+            checksum: client_entry.checksum,
+        });
+    }
+    // TODO: Send error informing no file stored.
+    HttpResponseBuilder::new(StatusCode::INTERNAL_SERVER_ERROR).json(PullResponse::err())
 }
 
 #[post("/push")]
@@ -413,30 +433,27 @@ fn init_logger(config: &Config) -> Result<(), io::Error> {
         .expect("users should only call `init_log_crate_proxy` function once");
     log_crate_proxy().set_logger(None);
     set_max_level(LevelFilter::from(&config.log_level));
-    let file_sink = spdlog::sink::FileSink::builder()
-        .path(&config.logfile)
-        .build_arc()
-        .map_err(io::Error::other)?;
 
-    let async_pool_sink = if config.stdout_log {
+    let mut async_pool_builder = spdlog::sink::AsyncPoolSink::builder();
+
+    if config.stdout_log {
         let stdout_sink = spdlog::sink::StdStreamSink::builder()
             .stdout()
             .build_arc()
             .map_err(io::Error::other)?;
-        spdlog::sink::AsyncPoolSink::builder()
-            .sink(file_sink)
-            .sink(stdout_sink)
+        async_pool_builder = async_pool_builder.sink(stdout_sink);
+    };
+
+    if let Some(logfile) = &config.logfile {
+        let file_sink = spdlog::sink::FileSink::builder()
+            .path(logfile)
             .build_arc()
-            .map_err(io::Error::other)?
-    } else {
-        spdlog::sink::AsyncPoolSink::builder()
-            .sink(file_sink)
-            .build_arc()
-            .map_err(io::Error::other)?
+            .map_err(io::Error::other)?;
+        async_pool_builder = async_pool_builder.sink(file_sink);
     };
 
     let async_logger = spdlog::Logger::builder()
-        .sink(async_pool_sink)
+        .sink(async_pool_builder.build_arc().unwrap())
         .flush_level_filter(spdlog::LevelFilter::All)
         .build_arc()
         .map_err(io::Error::other)?;

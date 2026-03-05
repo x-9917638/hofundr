@@ -22,7 +22,7 @@ use utoipa::{Modify, OpenApi, openapi::extensions::ExtensionsBuilder};
 
 use crate::{
     data::{
-        LoginPayload, LoginResponse, PullPayload, PullResponse, PushPayload, PushResponse,
+        LoginPayload, LoginResponse, PullPayload, PullResponse, PushPayload,
         RegistrationRequestPayload, RegistrationRequestResponse, RegistrationUploadPayload,
         RegistrationUploadResponse,
     },
@@ -245,6 +245,98 @@ async fn login(_data: web::Data<AppState>, _payload: Json<LoginPayload>) -> Http
     unimplemented!()
 }
 
+#[utoipa::path(
+    responses(
+        (
+            status = 200,
+            body = PullResponse,
+            description = "Success, guarantees a file and sha256 checksum",
+            examples((
+                "default" = (
+                    summary = "Response upon correct request",
+                    value = json!({
+                        "status": "Ok",
+                        "file": "Some(Vec<u8>)",
+                        "checksum": "Some([0u8; 32])"
+                    })
+                )
+            ))
+        ),
+        (
+            status = 400,
+            body = PullResponse,
+            description = "The client sent an incorrect request.",
+            examples((
+                "default" = (
+                    summary = "Response upon incorrect request",
+                    value = json!({
+                        "status": "Err",
+                        "file": None::<u8>,
+                        "checksum": None::<u8>
+                    })
+                )
+            ))
+        ),
+        (
+            status = 500,
+            body = PullResponse,
+            description = "An error occured processing the request.",
+            examples((
+                "default" = (
+                    summary = "Response upon internal server error",
+                    value = json!({
+                        "status": "Err",
+                        "file": None::<u8>,
+                        "checksum": None::<u8>
+                    })
+                )
+            ))
+        )
+    ),
+    request_body(
+        description = "
+JSON containing keys `identifier` and `credential_request`.
+
+- `identifier` should be the identifier returned to the client upon successful registration.
+- `session_id` should be the session id returned to the client upon login.
+- `nonce` should be the nonce used for encrypting the main payload.
+- `credential_finalization` should be an opaque-ke CredentialFinalization.
+- `ciphertext` should be a ChaCha20-Poly1305 encrypted struct. See below for details
+
+`ciphertext` must be encrypted using ChaCha2-Poly1305, with the nonce being `nonce` and the key being the
+session key derived from finalising login. `ciphertext` must be able to be converted to the struct below.
+```rust
+pub struct Encrypted {
+    pub last_modified: u64,
+}
+```
+The following code implements the conversion:
+```rust
+impl TryFrom<Vec<u8>> for Encrypted {
+    type Error = String;
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        if value.len() != 8 {
+            return Err(\"Length of value was not 8\".to_string());
+        }
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(&value);
+        Ok(Self {
+            last_modified: u64::from_le_bytes(arr),
+        })
+    }
+}
+```
+",
+        content = PullPayload,
+        example = json!({
+            "identifier": "Uuid",
+            "session_id": "Uuid",
+            "nonce": "[u8; 12]",
+            "credential_finalization": "CredentialFinalization<DefaultCipherSuite>",
+            "ciphertext": "Vec<u8>"
+        })
+    )
+)]
 #[post("/pull")]
 async fn pull(_data: web::Data<AppState>, _payload: Json<PullPayload>) -> HttpResponse {
     unimplemented!()
@@ -257,7 +349,7 @@ async fn push(_data: web::Data<AppState>, _payload: Json<PushPayload>) -> HttpRe
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(login, register_start, register_end),
+    paths(login, register_start, register_end, pull),
     info(
         description = "Hofundr is the API/server backend for syncing .fedb databases.
 
@@ -421,6 +513,7 @@ pub async fn api_json() -> HttpResponse {
         .body(API_JSON.as_str())
 }
 
+// I hope this improves performance :3
 static API_JSON: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let mut api = ApiDoc::openapi();
     CodeSamples.modify(&mut api);
